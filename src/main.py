@@ -120,7 +120,7 @@ class Application(QObject):
         self.widget.request_quit.connect(self.quit)
         self.widget.subtask_claimed.connect(self._on_subtask_claimed)
         self.widget.state_changed.connect(self._on_widget_state_changed)
-        self.widget.ease_point_reached.connect(self.sfx.play_ease_full)
+        self.widget.ease_point_reached.connect(self._on_ease_point_reached)
         self.widget.goal_completed.connect(self._on_goal_completed)
         self.widget.chest_bagged.connect(self._on_chest_bagged)
 
@@ -320,7 +320,8 @@ class Application(QObject):
         self.state.total_operations += 1
         reward = maybe_roll(self.state)
         if reward is not None:
-            self.sfx.play_grid_full()
+            if self.manager.will_count_operation():
+                self.sfx.play_grid_full()
             logger.debug("操作 #%d: 开奖 gold=%.1f diamond=%.1f",
                          self.state.total_operations, reward.gold, reward.diamond)
         subtask_reward = self.manager.record_operation(reward)
@@ -354,6 +355,10 @@ class Application(QObject):
         logger.info("10 分钟定时重抽开奖参数完成")
 
     # ---------- 子窗口 ----------
+    def _on_ease_point_reached(self) -> None:
+        if self.manager.will_count_operation():
+            self.sfx.play_ease_full()
+
     def _on_goal_completed(self) -> None:
         self.sfx.play_goal_complete()
 
