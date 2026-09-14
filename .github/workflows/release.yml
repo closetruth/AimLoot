@@ -37,28 +37,28 @@ jobs:
           PYTHONUTF8: '1'
 
       - name: Build with PyInstaller
-        run: python -m PyInstaller --noconfirm --clean Adventure.spec
+        run: python -m PyInstaller --noconfirm --clean AimLoot.spec
         env:
           PYTHONUTF8: '1'
 
       - name: Verify artifact
         shell: pwsh
         run: |
-          if (-not (Test-Path 'dist/Adventure/Adventure.exe')) { throw 'Adventure.exe missing' }
-          $size = (Get-ChildItem 'dist/Adventure' -Recurse | Measure-Object Length -Sum).Sum
+          if (-not (Test-Path 'dist/AimLoot/AimLoot.exe')) { throw 'AimLoot.exe missing' }
+          $size = (Get-ChildItem 'dist/AimLoot' -Recurse | Measure-Object Length -Sum).Sum
           if ($size -lt 50MB) { throw "Artifact suspiciously small: $size bytes" }
           Write-Host "OK: $([math]::Round($size / 1MB, 1)) MB"
 
       - name: Zip onedir
         shell: pwsh
-        run: Compress-Archive -Path 'dist/Adventure' -DestinationPath "Adventure-$env:GITHUB_REF_NAME.zip" -Force
+        run: Compress-Archive -Path 'dist/AimLoot' -DestinationPath "AimLoot-$env:GITHUB_REF_NAME.zip" -Force
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          name: Adventure ${{ github.ref_name }}
+          name: AimLoot ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
-          files: Adventure-${{ github.ref_name }}.zip
+          files: AimLoot-${{ github.ref_name }}.zip
           draft: false
           prerelease: false
