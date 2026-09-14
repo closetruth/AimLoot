@@ -12,7 +12,7 @@ env/
 build/
 dist/
 *.spec
-!Adventure.spec
+!AimLoot.spec
 *.egg-info/
 .eggs/
 pip-wheel-metadata/
