@@ -137,6 +137,6 @@
 ## 实现时注意
 
 1. **新字段**走 `RollRuntime` / `AppState.settings`，保证 `from_dict` / `to_dict` 兼容旧存档。  
-2. **纯视觉机制**（将满、稀有点）不改 `maybe_roll` 概率，成瘾感够且更「干净」。  
+2. **缓动条不改 `maybe_roll`**，只发宝箱（点领取入背包）；金币/钻石仍只由开奖决定。  
 3. **Combo / 里程碑**建议仅在「有活跃任务」时累计，与 `task_manager.record_operation` 对齐。  
-4. 无自动化测试，改完用 `run.bat` 手动验证落点、开奖、存档恢复。
+4. 改核心逻辑后跑 `tests/`（`unittest discover`）；UI 回归用 `tests/test_widget_smoke.py`（offscreen）。

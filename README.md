@@ -74,6 +74,7 @@ B站地址：https://www.bilibili.com/video/BV1wfbJ6iExF/?spm_id_from=0.0.upload
 
 目标管理 → **本周**：七列（周一～日）× 0–24 点。
 
+- 可按顶层目标筛选（或全部）；列头显示当日合计，并给出本周合计
 - 换顶层或换叶子会切段；跨午夜按自然日切开
 - 图例按身份配色，对照格子颜色
 - 独立日志：`%APPDATA%\AimLoot\runtime_intervals.json`
@@ -94,6 +95,8 @@ B站地址：https://www.bilibili.com/video/BV1wfbJ6iExF/?spm_id_from=0.0.upload
 
 - 资产、统计、完整开奖历史、三个游戏入口
 - 宝箱解锁：普通 30 分 → 传奇 8 小时；最多 4 个同时解锁（真实时间，关应用也走）
+- 金币加速 / 秒开：未就绪箱可按剩余时间花金币立刻可开或秒开（跳过动画）；同稀有度可一次秒开多只。约每 5 分钟剩余 1 金（普通满时约 6 金，传奇满时约 96 金）
+- 批量开箱：已就绪箱可一键批量开并跳过逐箱动画，结果以短汇总展示
 - 开箱：字母数量几何分布（均值约 2）；稀有度按箱子加权；伴生货币右偏
 
 公式与调参：[docs/chest-opening-probabilities.md](docs/chest-opening-probabilities.md)
@@ -106,7 +109,7 @@ B站地址：https://www.bilibili.com/video/BV1wfbJ6iExF/?spm_id_from=0.0.upload
 | 👾 像素格子战场 | 12 金 | 6×4 格子对战 |
 | 🔤 词汇自走棋 | 10 金 | 计算机英语词棋；铜币商店；前排对撞；站位配合与成长词 |
 
-`ESC` 结算回背包。主程序用子进程 + JSON 会话通信。
+`ESC` 结算回背包。主程序用子进程 + JSON 会话通信。点开始词汇自走棋后目标悬浮窗仍置顶，输入继续计入当前目标。
 
 相关设计：[前排对撞](docs/superpowers/specs/2026-09-02-word-arena-front-clash-design.md) · [站位与成长](docs/superpowers/specs/2026-09-02-word-arena-synergy-growth-design.md)
 
@@ -211,25 +214,28 @@ build.bat
 
 - 约每 **15 秒**自动保存，退出时再存一次
 - 损坏时尝试 `.bak*` / `.anchor` / `.snap.*` 恢复，并备份为 `data.broken.*.json`
+- 旧版 `%APPDATA%\Adventure` 会**复制**迁到 `%APPDATA%\AimLoot`（失败则继续用旧目录并提示）
 - **只计次数**，不记录按键内容、坐标或前台应用名；数据仅本机，不上传
 
 `data.json` 主要字段：`inventory`、`tasks[]`、`total_operations`、`roll_runtime`、`ease_chests`、`roll_history[]`、`settings`。实际开奖以 `roll_runtime` 为准；`settings` 里旧 roll 字段仅供迁移。常量见 `src/reward_system.py`。
 
 ### 🔊 音效（可选）
 
-仓库**不附带音效文件**，要自己加才会出声：
+仓库**不附带音效文件**，要自己加才会出声。
+
+操作 tick、开奖格子满格、缓动条满格只在当前目标正在计数时播放（有进行中目标；有子树时须已聚焦未完成叶子）。领取进包、完成目标不受这条限制。右键菜单可总开关音效。
 
 | 放哪里 | 何时播放 |
 |--------|----------|
 | `assets/sounds/roll_gold.*` | 金币开奖 |
 | `assets/sounds/roll_diamond.*` | 钻石开奖 |
-| `assets/sounds/op/` 下若干短音 | 活跃目标记数操作，每次 20% 随机抽一条（可叠播） |
+| `assets/sounds/op/` 下若干短音 | 记数操作，每次 20% 随机抽一条（可叠播） |
 | `assets/sounds/grid_full.*` | 离散开奖格子满格（先播） |
 | `assets/sounds/ease/` 下若干音乐 | 连续进度条满格必播；离散格子满格后 8% 叠播一条 |
 | `assets/sounds/chest_get.*` | 点箱子领取进背包 |
 | `assets/sounds/aim/` 下若干音乐 | 完成子目标或根目标，随机抽一条 |
 
-正式版 exe 把同样路径放到解压目录的 `_internal/assets/sounds/`。支持 wav / ogg / mp3 等；部分格式需本机 ffmpeg。右键菜单可开关音效。
+正式版 exe 把同样路径放到解压目录的 `_internal/assets/sounds/`。支持 wav / ogg / mp3 等；部分格式需本机 ffmpeg。
 
 ---
 
@@ -270,12 +276,6 @@ AimLoot/
 ```
 
 可选：`install.ps1`。`run_game.bat` 仅提示用，正常从背包进游戏。
-
-### 💡 想法
-- 做操作的音效，挥剑，魔法，防御等
-- 挂机小游戏悬浮窗
-- 加点画面反馈
-- 
 
 ### ⚡ 性能
 

@@ -41,15 +41,8 @@ data.json
 *.broken.json
 
 # Copyrighted audio purged from history (2026-08): do not re-add to the repo
-assets/sounds/diamond/*.mp3
-assets/sounds/op/*.mp3
 assets/sounds/ease/*.mp3
 assets/sounds/aim/*.mp3
-assets/sounds/[Bb]*.mp3
-assets/sounds/[Tt]he Owl House Ending Theme.mp3
-assets/sounds/roll_diamond.*
-assets/sounds/grid_full.*
-assets/sounds/chest_get.*
 
 # 
 .superpowers

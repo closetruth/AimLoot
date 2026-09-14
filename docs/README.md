@@ -20,7 +20,7 @@
 | 文档 | 说明 |
 |------|------|
 | 🎰 [probability-design.md](probability-design.md) | 开奖 / 开箱 / 缓动条概率总览（含 SVG 图） |
-| 📦 [chest-opening-probabilities.md](chest-opening-probabilities.md) | 开箱解锁、字母、伴生货币公式与调参 |
+| 📦 [chest-opening-probabilities.md](chest-opening-probabilities.md) | 开箱解锁、加速/秒开、字母、伴生货币公式与调参 |
 | 🧮 [gen_probability_charts.py](gen_probability_charts.py) | 改参数后重跑 `img/` 下分布图 |
 | 🖼️ [img/](img/) | 概率分布 SVG |
 
@@ -54,6 +54,7 @@
 
 | 文档 | 主题 |
 |------|------|
+| 🏷️ [2026-09-12-aimloot-rebrand-design.md](superpowers/specs/2026-09-12-aimloot-rebrand-design.md) | 产品从 Adventure 重命名为 AimLoot（存档迁移） |
 | 📅 [2026-09-02-weekly-runtime-intervals-design.md](superpowers/specs/2026-09-02-weekly-runtime-intervals-design.md) | 目标管理「本周」运行时段周视图 |
 | ⚔️ [2026-09-02-word-arena-front-clash-design.md](superpowers/specs/2026-09-02-word-arena-front-clash-design.md) | 词汇自走棋：前排对撞战斗 |
 | 🌱 [2026-09-02-word-arena-synergy-growth-design.md](superpowers/specs/2026-09-02-word-arena-synergy-growth-design.md) | 词汇自走棋：站位配合与成长词 |
@@ -64,6 +65,7 @@
 
 | 文档 | 说明 |
 |------|------|
+| 🏷️ [2026-09-12-aimloot-rebrand.md](superpowers/plans/2026-09-12-aimloot-rebrand.md) | AimLoot 重命名与存档迁移的分步实现计划 |
 | 📅 [2026-09-02-weekly-runtime-intervals.md](superpowers/plans/2026-09-02-weekly-runtime-intervals.md) | 本周时段功能的分步实现计划 |
 
 ---

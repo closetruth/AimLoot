@@ -87,9 +87,10 @@ Folder-style accounting: parent task `earned_*` / display totals sync from subta
 | `src/task_manager.py` | `TaskManager`: task/subtask CRUD, focus/start/pause/decompose/delete; idle pause; feeds runtime intervals on tick |
 | `src/runtime_intervals.py` | Week-view interval log (open/close segments, week query, separate JSON file) |
 | `src/reward_system.py` | `maybe_roll(state)`, crit, `reshuffle_roll_params`, random 6–14 op cycles, `RollRuntime` migration |
-| `src/chest_opening.py` | Chest unlock timers + letter/currency open RNG |
+| `src/chest_opening.py` | Chest unlock timers + letter/currency open RNG; gold speedup / instant open / batch open |
+| `src/branding.py` | `APP_NAME` / `APP_NAME_ZH` / tray tooltip / window titles |
 | `src/input_monitor.py` | `InputMonitor`: QTimer + GetAsyncKeyState; mouse-move distance; VM fallbacks |
-| `src/storage.py` | `load_state()` / `save_state()`: atomic JSON to `%APPDATA%\AimLoot\data.json`; backups / anchor / snapshots |
+| `src/storage.py` | `load_state()` / `save_state()`: atomic JSON to `%APPDATA%\AimLoot\data.json`; copy-migrate from `%APPDATA%\Adventure`; backups / anchor / snapshots |
 | `src/game_launcher.py` | `launch_pet_arena()` / `launch_pixel_tactics()` / `launch_word_arena()` |
 | `src/game_protocol.py` | `GameSession` / `GameResult` JSON protocol under `%APPDATA%\AimLoot\game_sessions\` |
 | `src/migrate_accounting.py` | Flat-task → nested subtask migration; `detach_subtask_progress_to_legacy` for decompose |
@@ -97,9 +98,10 @@ Folder-style accounting: parent task `earned_*` / display totals sync from subta
 ### UI helpers
 
 - `src/ui_goal_tree_area.py` — `GoalTreeArea`: goal-tree region on the floating widget.
-- `src/ui_week_runtime.py` — Week grid + legend in task dialog「本周」tab.
+- `src/ui_week_runtime.py` — Week grid + legend in task dialog「本周」tab; top-level filter and day/week totals.
 - `src/task_dialog.py` — Goal management dialog (includes week tab).
-- `src/inventory_dialog.py` — Inventory, chests, letters, game entry buttons.
+- `src/inventory_dialog.py` — Inventory, chests, letters, game entry buttons; gold speedup / instant / batch open.
+- `src/ui_chest_summary.py` — Short result panel after instant / batch open (no per-chest animation).
 - `src/ui_task_tree.py` — `TreeRow`, action buttons, GoalBlock QSS.
 - `src/ui_goal_tree_panel.py` — `GoalTreePanel` embedded in `TaskCard`.
 - `src/goal_actions.py` — `try_complete_goal`, `try_delete_goal` with confirmation.
@@ -110,7 +112,7 @@ Folder-style accounting: parent task `earned_*` / display totals sync from subta
 - `src/op_tracker.py` — sliding 60s window of op timestamps (in-memory only).
 - `src/active_time.py` — increments focused leaf or flat task `active_seconds` every 1s tick.
 - `src/power_monitor.py` — `should_count_time()`: false when display is off.
-- `src/sfx.py` — Qt Multimedia. Gold = `roll_gold.*`; diamond = `roll_diamond.*`; grid fill = `grid_full.*` then 8% overlay `ease/`; chest bag = `chest_get.*`; `op/` `ease/` `aim/` folders pick at random.
+- `src/sfx.py` — Qt Multimedia. Gold = `roll_gold.*`; diamond = `roll_diamond.*`; grid fill = `grid_full.*` then 8% overlay `ease/`; chest bag = `chest_get.*`; `op/` `ease/` `aim/` folders pick at random. Op tick / grid full / ease full only play when `TaskManager.will_count_operation()` is true (claim chest / complete goal are not gated). Defaults: `sound_op_chance=0.2`, `sound_grid_ease_chance=0.08` (legacy 0.4 / 0.25 migrate on load).
 - `src/win_utils.py` — pin to all desktops (pyvda), startup registry. No-ops on non-Windows.
 
 ### Game subprocess protocol
@@ -123,7 +125,7 @@ Entry costs (gold): pet 10, grid 12, word 10.
 
 ### Settings (in `data.json` → `settings`)
 
-Key tunables: `roll_interval`, `roll_chance` / `gold_chance`, `gold_min`/`gold_max`, `diamond_chance`, `diamond_min`/`diamond_max`, `subtask_default_target_minutes`, `subtask_completion_bonus_gold`, `idle_pause_minutes`, `sound_op_chance`, `sound_grid_ease_chance`, window/sound flags. Runtime roll values live in `roll_runtime`; settings roll fields are for **legacy migration** only. Defaults in `AppState.__init__` (`src/models.py`).
+Key tunables: `roll_interval`, `roll_chance` / `gold_chance`, `gold_min`/`gold_max`, `diamond_chance`, `diamond_min`/`diamond_max`, `subtask_default_target_minutes`, `subtask_completion_bonus_gold`, `idle_pause_minutes`, `sound_op_chance` (default 0.2), `sound_grid_ease_chance` (default 0.08), window/sound flags. Runtime roll values live in `roll_runtime`; settings roll fields are for **legacy migration** only. Defaults in `AppState.__init__` (`src/models.py`).
 
 ### Save behavior
 
