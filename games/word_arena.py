@@ -2666,8 +2666,8 @@ class WordArenaGame:
                         return
                 # 都买不起：刷新（金币不足时会被拒绝）
                 self._click_refresh()
-            elif self.dummy_t > 2.2:
-                # 空队也强制开战（dummy 就是要跑完流程）
+            else:
+                # 买窗结束即开战（含空队）；勿再空等到 2.2s，整局帧数会顶满测试上限
                 self._start_battle()
                 self.dummy_t = 0.0
             return

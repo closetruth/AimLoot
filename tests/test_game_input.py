@@ -537,11 +537,12 @@ class WordArenaSimultaneousBattleTests(unittest.TestCase):
         g = self.game
         g.auto_dummy = True
         g._click_start_game()
-        g.dummy_t = 2.0  # 跳到 shop 阶段直接开战
+        g.dummy_t = 2.0  # 跳过商店买窗，直接开战
         import time
         t0 = time.time()
         guard = 0
-        while g.phase != "over" and guard < 3000 and time.time() - t0 < 10:
+        # 最多约 20 回合（9 胜 + 生命耗尽）；商店买窗 + 战斗回放可达数千帧
+        while g.phase != "over" and guard < 25000 and time.time() - t0 < 30:
             guard += 1
             dt = 1 / 60
             if g.phase == "battle":
