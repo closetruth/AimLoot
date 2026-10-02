@@ -108,6 +108,7 @@ class Application(QObject):
                     "时长已经达标的，选中后即可点「完成」。",
                 )
         self.sfx = SfxPlayer(self.state.settings)
+        self.sfx.bgm_finished.connect(self._on_bgm_finished)
         if self.sfx.capable():
             self.sfx.prewarm()
             # 休眠唤醒后音频设备常失效；丢掉旧 QMediaPlayer，下次预热再建
@@ -118,6 +119,7 @@ class Application(QObject):
         self.widget.request_task_dialog.connect(self.show_task_dialog)
         self.widget.request_inventory_dialog.connect(self.show_inventory)
         self.widget.request_quit.connect(self.quit)
+        self.widget.request_stop_bgm.connect(self._on_request_stop_bgm)
         self.widget.subtask_claimed.connect(self._on_subtask_claimed)
         self.widget.state_changed.connect(self._on_widget_state_changed)
         self.widget.ease_point_reached.connect(self._on_ease_point_reached)
@@ -410,6 +412,8 @@ class Application(QObject):
             self._inv_dialog.request_speedup.connect(self._on_request_speedup)
             self._inv_dialog.request_instant_open.connect(self._on_request_instant_open)
             self._inv_dialog.request_open_all_ready.connect(self._on_request_open_all_ready)
+            self._inv_dialog.request_play_bgm.connect(self._on_request_play_bgm)
+            self._inv_dialog.request_stop_bgm.connect(self._on_request_stop_bgm)
         self._inv_dialog.refresh()
         self._inv_dialog.show()
         self._inv_dialog.raise_()
@@ -545,6 +549,43 @@ class Application(QObject):
         else:
             logger.warning("宠物竞技场失败: %s", msg)
             QMessageBox.warning(self.widget, "无法开始", msg)
+
+    def _on_request_play_bgm(self, song_name: str) -> None:
+        from .sfx import bgm_song_list
+
+        songs = bgm_song_list()
+        song = next((s for s in songs if s["name"] == song_name), None)
+        if song is None:
+            logger.warning("BGM 歌曲未找到: %s", song_name)
+            return
+        letter_counts: dict = song["letter_counts"]
+        if not self.state.inventory.can_afford_letters(letter_counts):
+            QMessageBox.warning(self.widget, "字母不足", f"普通稀有度字母不足以兑换「{song_name}」")
+            return
+        if not self.state.inventory.spend_letters(letter_counts):
+            QMessageBox.warning(self.widget, "字母不足", "消耗字母失败")
+            return
+        logger.info(
+            "BGM 兑换: %s, 消耗字母: %s",
+            song_name,
+            " ".join(f"{k}×{v}" for k, v in sorted(letter_counts.items())),
+        )
+        self.sfx.play_bgm(song["path"], song_name)
+        self._safe_save()
+        if self._inv_dialog is not None and self._inv_dialog.isVisible():
+            self._inv_dialog.set_bgm_status(song_name)
+            self._inv_dialog.refresh()
+
+    def _on_request_stop_bgm(self) -> None:
+        self.sfx.stop_bgm()
+        if self._inv_dialog is not None and self._inv_dialog.isVisible():
+            self._inv_dialog.set_bgm_status("")
+            self._inv_dialog.refresh()
+
+    def _on_bgm_finished(self) -> None:
+        if self._inv_dialog is not None and self._inv_dialog.isVisible():
+            self._inv_dialog.set_bgm_status("")
+            self._inv_dialog.refresh()
 
     def play_pixel_tactics(self) -> None:
         ok, msg, _result = launch_pixel_tactics(self.state)

@@ -469,6 +469,38 @@ class Inventory:
             total += sum(1 for c in counts if c > 0)
         return total
 
+    def letter_common_count(self, letter: str) -> int:
+        """某字母的普通稀有度(rarity=0)数量。"""
+        counts = self.letters.get(str(letter).upper())
+        return counts[0] if counts else 0
+
+    def consume_letter_common(self, letter: str) -> bool:
+        """消耗 1 个普通稀有度字母，成功返回 True。"""
+        letter = str(letter).upper()
+        if not ("A" <= letter <= "Z"):
+            return False
+        counts = self.letters.get(letter)
+        if counts is None or counts[0] <= 0:
+            return False
+        counts[0] -= 1
+        return True
+
+    def can_afford_letters(self, letter_counts: Dict[str, int]) -> bool:
+        """检查一组字母的普通稀有度库存是否足够。"""
+        for letter, need in letter_counts.items():
+            if self.letter_common_count(letter) < need:
+                return False
+        return True
+
+    def spend_letters(self, letter_counts: Dict[str, int]) -> bool:
+        """批量消耗普通稀有度字母，全部成功返回 True，否则不消耗。"""
+        if not self.can_afford_letters(letter_counts):
+            return False
+        for letter, need in letter_counts.items():
+            for _ in range(need):
+                self.consume_letter_common(letter)
+        return True
+
     @classmethod
     def from_dict(cls, data: Dict) -> "Inventory":
         raw_chests = data.get("chests", [])
@@ -701,6 +733,7 @@ class AppState:
         "subtask_default_target_minutes": 10,
         "subtask_completion_bonus_gold": 0.5,
         "idle_pause_minutes": 10,
+        "bgm_volume": 0.5,
     })
 
     def active_task(self) -> Optional[Task]:

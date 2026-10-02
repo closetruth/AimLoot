@@ -1,6 +1,8 @@
 """奖励背包对话框：展示玩家拥有的金币 / 钻石、宝箱解锁与字母收集。"""
 from __future__ import annotations
 
+from typing import Dict
+
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
@@ -88,6 +90,8 @@ class InventoryDialog(QDialog):
     request_speedup = Signal(int)       # 稀有度：花金币加速
     request_instant_open = Signal(int, int)  # 稀有度, 数量：花金币秒开
     request_open_all_ready = Signal()   # 批量开箱（跳过动画）
+    request_play_bgm = Signal(str)      # 歌曲文件名（stem）
+    request_stop_bgm = Signal()
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -157,6 +161,10 @@ class InventoryDialog(QDialog):
         v.addWidget(self._section_label("字母收集"))
         self.letters_card = self._make_letters_card()
         v.addWidget(self.letters_card["frame"])
+
+        v.addWidget(self._section_label("音乐兑换"))
+        self.bgm_card = self._make_bgm_card()
+        v.addWidget(self.bgm_card["frame"])
 
         v.addWidget(self._section_label("数据统计"))
         self.stat_card = self._make_stat_card()
@@ -493,6 +501,96 @@ class InventoryDialog(QDialog):
         btn_instant.show()
         self._update_instant_button(rarity)
 
+    def _make_bgm_card(self) -> dict:
+        from .sfx import bgm_song_list
+
+        frame = QFrame()
+        frame.setObjectName("Card")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(6)
+
+        self.lbl_bgm_status = QLabel()
+        self.lbl_bgm_status.setObjectName("StatLine")
+        lay.addWidget(self.lbl_bgm_status)
+
+        self.btn_bgm_stop = QPushButton("停止")
+        self.btn_bgm_stop.setFixedWidth(50)
+        self.btn_bgm_stop.setCursor(Qt.PointingHandCursor)
+        self.btn_bgm_stop.hide()
+        self.btn_bgm_stop.clicked.connect(self.request_stop_bgm.emit)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.lbl_bgm_status, 1)
+        status_row.addWidget(self.btn_bgm_stop)
+        lay.addLayout(status_row)
+
+        self._bgm_songs = bgm_song_list()
+        self._bgm_rows: list[dict] = []
+        for song in self._bgm_songs:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            name_lbl = QLabel(song["name"])
+            name_lbl.setObjectName("StatLine")
+            name_lbl.setWordWrap(True)
+            row.addWidget(name_lbl, 1)
+
+            cost_parts: list[str] = []
+            letter_counts: Dict[str, int] = song["letter_counts"]
+            for letter in sorted(letter_counts):
+                need = letter_counts[letter]
+                cost_parts.append(f"{letter}×{need}")
+            cost_lbl = QLabel(" ".join(cost_parts))
+            cost_lbl.setObjectName("StatLine")
+            cost_lbl.setStyleSheet("color: #b8bcc8; font-size: 11px;")
+            cost_lbl.setWordWrap(True)
+            row.addWidget(cost_lbl, 1)
+
+            btn = QPushButton("播放")
+            btn.setObjectName("Primary")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedWidth(50)
+            song_name = song["name"]
+            btn.clicked.connect(lambda _=False, n=song_name: self.request_play_bgm.emit(n))
+            row.addWidget(btn)
+
+            lay.addLayout(row)
+            self._bgm_rows.append({
+                "song": song,
+                "cost_lbl": cost_lbl,
+                "btn": btn,
+            })
+
+        return {"frame": frame}
+
+    def _refresh_bgm(self) -> None:
+        inv = self.state.inventory
+        for row_info in self._bgm_rows:
+            song = row_info["song"]
+            btn = row_info["btn"]
+            cost_lbl = row_info["cost_lbl"]
+            letter_counts: Dict[str, int] = song["letter_counts"]
+
+            can_afford = True
+            parts: list[str] = []
+            for letter in sorted(letter_counts):
+                need = letter_counts[letter]
+                have = inv.letter_common_count(letter)
+                if have < need:
+                    can_afford = False
+                    parts.append(f'<span style="color:#ff6b6b">{letter}×{need}({have})</span>')
+                else:
+                    parts.append(f'{letter}×{need}({have})')
+            cost_lbl.setText(" ".join(parts))
+            btn.setEnabled(can_afford)
+
+    def set_bgm_status(self, name: str) -> None:
+        if name:
+            self.lbl_bgm_status.setText(f"正在播放：{name}")
+            self.btn_bgm_stop.show()
+        else:
+            self.lbl_bgm_status.setText("")
+            self.btn_bgm_stop.hide()
+
     def _make_letters_card(self) -> dict:
         frame = QFrame()
         frame.setObjectName("Card")
@@ -580,6 +678,7 @@ class InventoryDialog(QDialog):
         self.diam_card["num"].setText(format_amount(s.inventory.diamond))
         self._refresh_chest_lines()
         self._refresh_letters()
+        self._refresh_bgm()
         self.lbl_ops.setText(f"全局操作数：{s.total_operations}")
         active = [t for t in s.tasks if t.status == TaskStatus.ACTIVE]
         done = [t for t in s.tasks if t.status == TaskStatus.COMPLETED]

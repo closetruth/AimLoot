@@ -146,6 +146,7 @@ class FloatingWidget(QWidget):
     request_task_dialog = Signal()
     request_inventory_dialog = Signal()
     request_quit = Signal()
+    request_stop_bgm = Signal()
     subtask_claimed = Signal(str, object)  # (title, Reward)
     state_changed = Signal()
     ease_point_reached = Signal()
@@ -375,6 +376,10 @@ class FloatingWidget(QWidget):
         act_sound.setChecked(bool(s.get("sound_enabled", True)))
         act_sound.toggled.connect(self._toggle_sound)
         menu.addAction(act_sound)
+
+        act_stop_bgm = QAction("停止背景音乐", self)
+        act_stop_bgm.triggered.connect(self.request_stop_bgm.emit)
+        menu.addAction(act_stop_bgm)
 
         menu.addSeparator()
         act_exit = QAction(f"退出 {APP_NAME}", self)

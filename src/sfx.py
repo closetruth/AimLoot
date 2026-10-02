@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from PySide6.QtCore import QObject, QTimer, QUrl
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtWidgets import QApplication
 
 from .models import Reward
@@ -156,6 +156,31 @@ def _qt_types():
     return QAudioOutput, QMediaPlayer
 
 
+def _song_letter_counts(name: str) -> Dict[str, int]:
+    """从歌曲文件名提取字母消耗表（重复字母计多次）。"""
+    counts: Dict[str, int] = {}
+    for ch in name:
+        upper = ch.upper()
+        if "A" <= upper <= "Z":
+            counts[upper] = counts.get(upper, 0) + 1
+    return counts
+
+
+def bgm_song_list() -> List[Dict[str, object]]:
+    """返回 aim/ 文件夹下的音乐列表，每项含 path / name / letter_counts。"""
+    aim_dir = _sounds_dir() / "aim"
+    files = _iter_sound_dir(aim_dir)
+    result: List[Dict[str, object]] = []
+    for f in files:
+        stem = f.stem
+        result.append({
+            "path": f,
+            "name": stem,
+            "letter_counts": _song_letter_counts(stem),
+        })
+    return result
+
+
 class _Voice:
     __slots__ = ("player", "output", "busy", "lane")
 
@@ -180,6 +205,9 @@ class SfxPlayer(QObject):
         self._skip: set[str] = set()
         self._folder_cache: Dict[str, List[Path]] = {}
         self._prewarm_timer: Optional[QTimer] = None
+        self._bgm_player: Optional[object] = None
+        self._bgm_output: Optional[object] = None
+        self._bgm_name: str = ""
         if QApplication.instance() is None:
             self._qt = None
 
@@ -223,6 +251,7 @@ class SfxPlayer(QObject):
 
     def invalidate(self) -> None:
         self._drop()
+        self.stop_bgm()
         self._has_files = _probe_sound_files()
         if self._has_files and self._qt is None:
             self._qt = _qt_types()
@@ -232,7 +261,82 @@ class SfxPlayer(QObject):
     def shutdown(self) -> None:
         if self._prewarm_timer is not None:
             self._prewarm_timer.stop()
+        self.stop_bgm()
         self._drop()
+
+    def _bgm_volume(self) -> float:
+        try:
+            return max(0.0, min(1.0, float(self._settings.get("bgm_volume", 0.5))))
+        except (TypeError, ValueError):
+            return 0.5
+
+    def play_bgm(self, src: Path, name: str = "") -> None:
+        """播放 BGM（循环），独占声道，与音效池互不干扰。"""
+        self.stop_bgm()
+        qt = _qt_types()
+        if qt is None:
+            return
+        QAudioOutput, QMediaPlayer = qt
+        ready = qt_ready_path(src)
+        try:
+            player = QMediaPlayer(self)
+            output = QAudioOutput(self)
+            player.setAudioOutput(output)
+            output.setVolume(self._bgm_volume())
+            player.setSource(QUrl.fromLocalFile(str(ready.resolve())))
+            player.setLoops(1)
+            player.play()
+            player.mediaStatusChanged.connect(self._on_bgm_status)
+            self._bgm_player = player
+            self._bgm_output = output
+            self._bgm_name = name or src.stem
+            logger.info("BGM 播放: %s", self._bgm_name)
+        except Exception as exc:
+            logger.warning("BGM 播放失败 %s: %s", src.name, exc)
+            self._bgm_player = None
+            self._bgm_output = None
+            self._bgm_name = ""
+
+    def stop_bgm(self) -> None:
+        """停止 BGM。"""
+        if self._bgm_player is not None:
+            try:
+                self._bgm_player.mediaStatusChanged.disconnect(self._on_bgm_status)
+            except Exception:
+                pass
+            try:
+                self._bgm_player.stop()
+                self._bgm_player.setSource(QUrl())
+            except Exception:
+                pass
+            self._bgm_player = None
+            self._bgm_output = None
+            name = self._bgm_name
+            self._bgm_name = ""
+            if name:
+                logger.info("BGM 停止: %s", name)
+
+    def bgm_playing(self) -> bool:
+        return self._bgm_player is not None
+
+    def bgm_song_name(self) -> str:
+        return self._bgm_name
+
+    def _on_bgm_status(self, status: object) -> None:
+        qt = _qt_types()
+        if qt is None:
+            return
+        _, QMediaPlayer = qt
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            name = self._bgm_name
+            self._bgm_player = None
+            self._bgm_output = None
+            self._bgm_name = ""
+            if name:
+                logger.info("BGM 播放结束: %s", name)
+            self.bgm_finished.emit()
+
+    bgm_finished = Signal()
 
     def play_roll_hit(self, reward: Reward) -> None:
         if not self.capable() or reward.is_empty():
