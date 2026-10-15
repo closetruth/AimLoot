@@ -35,9 +35,11 @@ from .ui_qt import make_section_title, set_label_html
 from .ui_roll_bar import (
     _CHEST_SIZE,
     _draw_chest,
+    CHEST_RARITY_NAMES,
     EasedProgressBar,
     SegmentedRollBar,
 )
+from .ui_slot_machine import SlotMachineDialog
 from .ui_text import (
     format_ops_summary_html,
     format_roll_history_lines_html,
@@ -615,6 +617,7 @@ class FloatingWidget(QWidget):
         self.roll_progress_bar.mark_claimed(index)
         self._paint_global_stats()
         self._fly_chest_to_bag(index, rarity)
+        self._show_slot_machine(rarity)
         if index == 0:
             ec.begin_next_cycle()
             self.roll_progress_bar.set_progress(
@@ -626,6 +629,23 @@ class FloatingWidget(QWidget):
             )
             self.roll_progress_bar.apply_claimed(ec.claimed)
         self.chest_bagged.emit()
+
+    def _show_slot_machine(self, rarity: int) -> None:
+        """领宝箱后弹简单老虎机；额外奖励经信号入账。"""
+        dialog = SlotMachineDialog(
+            Reward(),
+            task_title=f"{CHEST_RARITY_NAMES[rarity]}宝箱",
+            parent=self,
+        )
+        dialog.reward_decided.connect(self._apply_slot_bonus)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _apply_slot_bonus(self, bonus: Reward) -> None:
+        if bonus.is_empty():
+            return
+        self.state.inventory.add(bonus)
+        self._paint_global_stats()
 
     def _update_roll_bar(self) -> None:
         rt = self.state.roll_runtime

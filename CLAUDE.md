@@ -102,6 +102,7 @@ Folder-style accounting: parent task `earned_*` / display totals sync from subta
 - `src/task_dialog.py` — Goal management dialog (includes week tab).
 - `src/inventory_dialog.py` — Inventory, chests, letters, game entry buttons; gold speedup / instant / batch open.
 - `src/ui_chest_summary.py` — Short result panel after instant / batch open (no per-chest animation).
+- `src/ui_slot_machine.py` — `SlotMachineDialog`: 3-reel bonus spin (金/钻/×) on goal completion (`goal_actions`) and chest claim (`widget`); result decided at construction, `reward_decided` emits exactly once via `_finalize` on any close path.
 - `src/ui_task_tree.py` — `TreeRow`, action buttons, GoalBlock QSS.
 - `src/ui_goal_tree_panel.py` — `GoalTreePanel` embedded in `TaskCard`.
 - `src/goal_actions.py` — `try_complete_goal`, `try_delete_goal` with confirmation.

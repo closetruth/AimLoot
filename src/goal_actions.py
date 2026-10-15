@@ -3,13 +3,20 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QMessageBox, QWidget
 
+from .models import Reward
 from .task_manager import TaskManager
 from .ui_confirm import ask_yes_no
-from .ui_text import format_reward_gain
+from .ui_slot_machine import SlotMachineDialog
+
+
+def _apply_slot_bonus(manager: TaskManager, bonus: Reward) -> None:
+    """老虎机额外奖励入账（空奖励跳过）。"""
+    if not bonus.is_empty():
+        manager.state.inventory.add(bonus)
 
 
 def try_complete_goal(parent: QWidget, manager: TaskManager, task_id: str) -> bool:
-    """尝试完成目标；成功返回 True。"""
+    """尝试完成目标；成功返回 True。弹出老虎机判定额外奖励。"""
     task = manager.get(task_id)
     if task is None:
         return False
@@ -46,18 +53,11 @@ def try_complete_goal(parent: QWidget, manager: TaskManager, task_id: str) -> bo
         )
         return False
     reward = manager.complete(task_id)
-    if reward is not None and not reward.is_empty():
-        QMessageBox.information(
-            parent,
-            "恭喜",
-            f"目标「{task.title}」已完成！\n获得 {format_reward_gain(reward.gold, reward.diamond)}",
-        )
-    else:
-        QMessageBox.information(
-            parent,
-            "完成",
-            f"目标「{task.title}」已完成。本次没有累计到奖励。",
-        )
+    base = reward if reward is not None else Reward()
+    dialog = SlotMachineDialog(base, task_title=f"目标完成 · {task.title}", parent=parent)
+    dialog.reward_decided.connect(lambda bonus: _apply_slot_bonus(manager, bonus))
+    dialog.exec()
+    dialog.deleteLater()
     return True
 
 
