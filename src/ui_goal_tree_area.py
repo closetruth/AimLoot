@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QObject, Qt, QRect, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QRect, QTimer, Signal
 from PySide6.QtGui import QCursor, QHelpEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -110,6 +110,8 @@ class GoalTreeArea(QWidget):
         self._dbg_stale_dot: set[str] = set()
         self._detail_currency = CurrencyDisplay(0.0, 0.0)
         self._detail_focus_key = ""
+        # 折叠/展开时的滚动锚定：记录被点行的视口内纵坐标，重建后恢复
+        self._tree_scroll_anchor: Optional[tuple[str, int]] = None
 
         self._build_ui()
         self.refresh()
@@ -849,7 +851,48 @@ class GoalTreeArea(QWidget):
             self._expanded_goal_ids.discard(task_id)
         else:
             self._expanded_goal_ids.add(task_id)
+        self._remember_tree_scroll_anchor(task_id)
         self._request_local_refresh()
+
+    def _remember_tree_scroll_anchor(self, task_id: str) -> None:
+        """记录被折叠/展开行的视口内纵坐标，重建后按此恢复滚动位置。"""
+        row = self._goal_root_rows.get(task_id)
+        if row is None:
+            self._tree_scroll_anchor = None
+            return
+        try:
+            y = row.mapTo(self.subgoals_scroll.viewport(), QPoint(0, 0)).y()
+        except RuntimeError:
+            self._tree_scroll_anchor = None
+            return
+        self._tree_scroll_anchor = (task_id, y)
+
+    def _restore_tree_scroll_anchor(self) -> None:
+        """重建后把被点行放回原视口位置（补偿滚动条值），消除列表跳动。
+
+        两段延迟：重建期间的几何尚未落定（容器 resize 在事件队列后段），
+        同步设值会被钳到 0；延后一拍后重新读取行位置再补偿。
+        """
+        anchor = self._tree_scroll_anchor
+        if anchor is None:
+            return
+        self._tree_scroll_anchor = None
+        task_id, vp_y = anchor
+        QTimer.singleShot(0, lambda: self._apply_tree_scroll_anchor(task_id, vp_y))
+
+    def _apply_tree_scroll_anchor(self, task_id: str, vp_y: int) -> None:
+        row = self._goal_root_rows.get(task_id)
+        if row is None:
+            return
+        try:
+            now_y = row.mapTo(self.subgoals_scroll.viewport(), QPoint(0, 0)).y()
+        except RuntimeError:
+            return
+        delta = now_y - vp_y
+        if delta == 0:
+            return
+        vbar = self.subgoals_vbar
+        vbar.setValue(vbar.value() + delta)
 
     def _clear_tree_layout(self) -> None:
         self._goal_root_rows.clear()
@@ -1283,6 +1326,7 @@ class GoalTreeArea(QWidget):
             since_diamond=since_diamond,
         )
         self._sync_subgoals_container_geometry()
+        self._restore_tree_scroll_anchor()
         self._request_geometry_sync()
 
     def _on_decompose(self, task_id: str, subtask_id: str) -> None:
@@ -1367,6 +1411,8 @@ class GoalTreeArea(QWidget):
 
     def _on_sub_toggle_fold(self, task_id: str, subtask_id: str) -> None:
         if self.manager.toggle_subtask_expand(task_id, subtask_id):
+            # 子目标分组折叠后锚定用所属根行回正
+            self._remember_tree_scroll_anchor(task_id)
             self._request_local_refresh()
 
     def _on_sub_focus(self, task_id: str, subtask_id: str) -> None:

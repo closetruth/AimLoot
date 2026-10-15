@@ -198,6 +198,164 @@ class WidgetGeometryRegressionTest(unittest.TestCase):
         )
 
 
+class TreeScrollAnchorTest(unittest.TestCase):
+    """回归：折叠/展开目标不得让树滚动位置跳变（被点行停在原视口位置）。"""
+
+    def _make_scrollable_widget(self) -> FloatingWidget:
+        """造一棵内容高过视口的树：多个目标 + 每个都带几个子目标。"""
+        state, manager, _tmp = _make_manager(self)
+        widget = FloatingWidget(state, manager)
+        for i in range(6):
+            task = manager.create(f"目标 {i}")
+            for j in range(6):
+                manager.add_subtask(task.id, f"子目标 {i}-{j}", target_minutes=30)
+        widget.show()
+        _app.processEvents()
+        _app.processEvents()
+        self.addCleanup(widget.close)
+        self.addCleanup(widget.deleteLater)
+        return widget
+
+    def _settle(self) -> None:
+        for _ in range(3):
+            _app.processEvents()
+        QTest.qWait(60)
+        _app.processEvents()
+
+    def _anchor_position(self, tree, anchor_id: str) -> int:
+        row = tree._goal_root_rows[anchor_id]
+        return row.mapTo(tree.subgoals_scroll.viewport(), QPoint(0, 0)).y()
+
+    def test_expand_does_not_jump_scroll(self):
+        """展开时若树仍可滚动，锚点行必须精确停在原视口位置。"""
+        widget = self._make_scrollable_widget()
+        tree = widget.goal_tree
+        # 只展开部分目标：保证折叠一行后内容仍高于视口（有滚动空间）
+        tasks = list(widget.state.tasks)
+        for t in tasks[: len(tasks) - 1]:
+            tree._expanded_goal_ids.add(t.id)
+        widget.refresh()
+        self._settle()
+
+        vbar = tree.subgoals_vbar
+        self.assertGreater(vbar.maximum(), 0, "测试前提：树应可滚动")
+        vbar.setValue(vbar.maximum() // 2)
+        _app.processEvents()
+
+        anchor_id = tasks[-1].id  # 最后一个（折叠态）目标行
+        before_y = self._anchor_position(tree, anchor_id)
+        tree._on_goal_toggle_fold(anchor_id)  # 展开（全树重建）
+        self._settle()
+
+        self.assertIn(anchor_id, tree._goal_root_rows)
+        self.assertGreater(vbar.maximum(), 0, "展开后仍有滚动空间，可精确保位")
+        after_y = self._anchor_position(tree, anchor_id)
+        self.assertLessEqual(
+            abs(after_y - before_y),
+            24,
+            f"展开后锚点行视口位置偏移过大：{before_y} → {after_y}（列表跳动）",
+        )
+
+    def test_collapse_then_expand_restores_scroll_range(self):
+        """边界：收起(内容变矮)后再展开(内容变高)，滚动范围应恢复，
+        且再次折叠不跳（锚定在范围恢复的路径上仍生效）。"""
+        widget = self._make_scrollable_widget()
+        tree = widget.goal_tree
+        for t in widget.state.tasks:
+            tree._expanded_goal_ids.add(t.id)
+        widget.refresh()
+        self._settle()
+
+        vbar = tree.subgoals_vbar
+        vbar.setValue(vbar.maximum() // 2)
+        _app.processEvents()
+
+        anchor_id = list(tree._goal_root_rows)[-1]
+        before_y = self._anchor_position(tree, anchor_id)
+
+        tree._on_goal_toggle_fold(anchor_id)  # 收起
+        self._settle()
+        self.assertIn(anchor_id, tree._goal_root_rows)
+        after_y = self._anchor_position(tree, anchor_id)
+        self.assertLessEqual(
+            abs(after_y - before_y), 24,
+            f"收起后锚点行视口位置偏移过大：{before_y} → {after_y}",
+        )
+
+        # 再展开：范围恢复，锚定仍要求稳定
+        mid_y = self._anchor_position(tree, anchor_id)
+        tree._on_goal_toggle_fold(anchor_id)  # 展开
+        self._settle()
+        self.assertIn(anchor_id, tree._goal_root_rows)
+        final_row = tree._goal_root_rows[anchor_id]
+        final_y = self._anchor_position(tree, anchor_id)
+        vp_h = tree.subgoals_scroll.viewport().height()
+        self.assertTrue(
+            -final_row.height() <= final_y < vp_h
+            or abs(final_y - mid_y) <= 24,
+            f"再展开后锚点行应停在原位或仍在视口内：mid={mid_y} final={final_y} vp={vp_h}",
+        )
+
+    def test_collapse_does_not_jump_scroll(self):
+        widget = self._make_scrollable_widget()
+        tree = widget.goal_tree
+        for t in widget.state.tasks:
+            tree._expanded_goal_ids.add(t.id)
+        widget.refresh()
+        self._settle()
+
+        vbar = tree.subgoals_vbar
+        self.assertGreater(vbar.maximum(), 0, "测试前提：树应可滚动")
+        vbar.setValue(vbar.maximum() // 2)
+        _app.processEvents()
+
+        anchor_id = list(tree._goal_root_rows)[-1]
+        before_y = self._anchor_position(tree, anchor_id)
+        tree._on_goal_toggle_fold(anchor_id)  # 收起（全树重建）
+        self._settle()
+
+        self.assertIn(anchor_id, tree._goal_root_rows)
+        after_y = self._anchor_position(tree, anchor_id)
+        self.assertLessEqual(
+            abs(after_y - before_y),
+            24,
+            f"收起后锚点行视口位置偏移过大：{before_y} → {after_y}（列表跳动）",
+        )
+
+    def test_subtask_group_fold_does_not_jump_scroll(self):
+        """子目标分组折叠同样保持视口稳定。"""
+        widget = self._make_scrollable_widget()
+        tree = widget.goal_tree
+        for t in widget.state.tasks:
+            tree._expanded_goal_ids.add(t.id)
+        widget.refresh()
+        self._settle()
+
+        vbar = tree.subgoals_vbar
+        self.assertGreater(vbar.maximum(), 0, "测试前提：树应可滚动")
+        vbar.setValue(vbar.maximum() // 2)
+        _app.processEvents()
+
+        anchor_id = list(tree._goal_root_rows)[-1]
+        before_y = self._anchor_position(tree, anchor_id)
+        # 折叠最后一个目标的第一个子目标（它下面还有子行 → 内容收缩）
+        task = next(t for t in widget.state.tasks if t.id == anchor_id)
+        if task.subtasks and task.subtasks[0].children:
+            sub_id = task.subtasks[0].id
+        else:
+            sub_id = task.subtasks[0].id
+        tree._on_sub_toggle_fold(anchor_id, sub_id)
+        self._settle()
+
+        self.assertIn(anchor_id, tree._goal_root_rows)
+        after_y = self._anchor_position(tree, anchor_id)
+        self.assertLessEqual(
+            abs(after_y - before_y),
+            24,
+            f"子目标折叠后锚点行视口位置偏移过大：{before_y} → {after_y}",
+        )
+
+
 class RollBarPaintRegressionTest(unittest.TestCase):
     """回归：paintEvent 不得再排队 update，否则半透明置顶窗会卡死。"""
 
