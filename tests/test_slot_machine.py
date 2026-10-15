@@ -190,21 +190,46 @@ class SlotMachineDialogTests(_SfxInjection):
         self.assertIn("stop", self._sfx.calls, "三轴停稳后循环声应停")
         dlg.close()
 
-    def test_near_miss_sfx_on_one_away(self):
-        """金××（差一格）：不中奖但播差一点提示音。"""
+    def test_near_miss_reveal_after_delay(self):
+        """金××（差一格）：静置节拍后播"差一点"音 + 标签可见 + 两格 ✕ 回弹。"""
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 2, 2))
         _wait_result(dlg)
         self.assertTrue(dlg.bonus_reward().is_empty())
-        self.assertIn("near", self._sfx.calls)
+        self.assertNotIn("near", self._sfx.calls, "揭晓前不应立刻播近失音")
+        self.assertFalse(dlg._near_miss_label.isVisible())
+        _pump(500)  # 等过 300ms 静置节拍
+        self.assertIn("near", self._sfx.calls, "静置后应播近失音")
         self.assertNotIn("win", self._sfx.calls)
+        self.assertTrue(dlg._near_miss_label.isVisible(), "近失标签应可见")
+        # 两个 ✕ 格各有回弹动画（_nudge_anim 存活期间非 None）
+        self.assertIsNotNone(dlg._reels[1]._nudge_anim)
+        self.assertIsNotNone(dlg._reels[2]._nudge_anim)
+        self.assertIsNone(dlg._reels[0]._nudge_anim, "金格不应回弹")
+        dlg.close()
+
+    def test_near_miss_escape_before_reveal_is_safe(self):
+        """静置节拍期间 Esc：不崩、结算一次、延迟揭晓被取消。"""
+        dlg = _make_dialog(Reward(gold=1.0), result=(2, 2, 0))
+        got: list[object] = []
+        dlg.reward_decided.connect(got.append)
+        _wait_result(dlg)
+        self.assertNotIn("near", self._sfx.calls)
+        QTest.keyClick(dlg, Qt.Key_Escape)  # 在 300ms 揭晓前关闭
+        _app.processEvents()
+        self.assertEqual(len(got), 1)
+        self.assertTrue(dlg._finalized)
+        _pump(500)
+        self.assertNotIn("near", self._sfx.calls, "关闭后不得再播近失音")
         dlg.close()
 
     def test_all_miss_sfx_is_silent(self):
-        """×××：离中奖两格，不放近失音。"""
+        """×××：离中奖两格，无近失音、无标签。"""
         dlg = _make_dialog(Reward(gold=1.0), result=(2, 2, 2))
         _wait_result(dlg)
+        _pump(500)
         self.assertNotIn("near", self._sfx.calls)
         self.assertNotIn("win", self._sfx.calls)
+        self.assertFalse(dlg._near_miss_label.isVisible())
         dlg.close()
 
     def test_escape_before_stop_still_awards(self):
@@ -252,6 +277,7 @@ class SlotMachineDialogTests(_SfxInjection):
         _wait_result(dlg)
         self.assertTrue(dlg.bonus_reward().is_empty())
         self.assertTrue(dlg._close_btn.isEnabled(), "空手也能顺利收下")
+        self.assertIsNotNone(dlg._reveal_timer, "1 个 ✕ 应排入近失揭晓定时器")
         dlg.close()
         _app.processEvents()
         self.assertTrue(dlg._finalized)
@@ -261,7 +287,10 @@ class SlotMachineDialogTests(_SfxInjection):
             self.assertFalse(reel._timer.isActive(), "轴计时器必须停")
         for timer in dlg._stop_timers:
             self.assertFalse(timer.isActive(), "停轴计时器必须停")
+        self.assertFalse(dlg._reveal_timer.isActive(), "迟揭晓定时器必须停")
         self.assertIn("stop", self._sfx.calls)
+        _pump(500)
+        self.assertNotIn("near", self._sfx.calls, "关闭后不得再揭晓近失")
 
     def test_chest_claim_opens_slot_and_bonus_lands(self):
         """集成回归：领宝箱弹老虎机，bonus 信号入账。"""

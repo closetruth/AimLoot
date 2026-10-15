@@ -10,7 +10,7 @@ import random
 from functools import partial
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -59,6 +59,12 @@ _STOP_STAGGER_MS = 200    # 相邻两轴开始停的间隔
 _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
+
+_NEAR_MISS_DELAY_MS = 300  # 三轴停稳后静置节拍，再揭晓近失反馈
+_NUDGE_H = 7               # 近失回弹位移（中心行向下再弹回）
+_BLINK_MS = 400            # 近失标签闪烁周期
+_BLINK_TOTAL = 5           # 闪烁次数（约 2 秒后定格）
+_NEAR_MISS_COLOR = "#ff9f43"  # 与 ui_text._TOAST_CRIT 一致的橙
 
 
 def spin_result(rng: Optional[random.Random] = None) -> Tuple[int, int, int]:
@@ -123,6 +129,8 @@ class _ReelWidget(QWidget):
         self._target: Optional[int] = None
         self._stopped = True
         self._flash: Optional[str] = None
+        self._nudge = 0.0
+        self._nudge_anim: Optional[QPropertyAnimation] = None
         self._timer = QTimer(self)
         self._timer.setInterval(_TICK_MS)
         self._timer.timeout.connect(self._on_tick)
@@ -153,6 +161,34 @@ class _ReelWidget(QWidget):
         self._flash = color
         self.update()
 
+    def nudge(self, times: int = 2) -> None:
+        """近失"想再滚一格"：中心行向下轻推再弹回，重复 times 次。"""
+        if self._nudge_anim is not None:
+            self._nudge_anim.stop()
+        anim = QPropertyAnimation(self, b"nudge", self)
+        anim.setDuration(180)
+        anim.setStartValue(0.0)
+        anim.setKeyValueAt(0.35, 1.0)
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setLoopCount(times)
+        anim.start()
+        self._nudge_anim = anim
+
+    def get_nudge(self) -> float:
+        return self._nudge
+
+    def set_nudge(self, value: float) -> None:
+        self._nudge = float(value)
+        self.update()
+
+    nudgeProp = Property(float, get_nudge, set_nudge)
+
+    def stop_nudge(self) -> None:
+        if self._nudge_anim is not None:
+            self._nudge_anim.stop()
+            self._nudge_anim = None
+
     def stop_timer(self) -> None:
         self._timer.stop()
 
@@ -173,6 +209,7 @@ class _ReelWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         row_h = self.height() / _VISIBLE_ROWS
+        p.translate(0, self._nudge * _NUDGE_H)
         for row in (-1, 0, 1):
             sym = _REEL_STRIP[(self._offset + row) % _STRIP_LEN]
             rect = self.rect().adjusted(4, 0, -4, 0)
@@ -217,8 +254,12 @@ class SlotMachineDialog(QDialog):
         self._bonus = compute_bonus(*self._result, self._base, rng=rng)
         self._finalized = False
         self._result_shown = False
+        self._near_miss_active = False
         self._stopped_count = 0
         self._stop_timers: List[QTimer] = []
+        self._reveal_timer: Optional[QTimer] = None
+        self._blink_timer: Optional[QTimer] = None
+        self._blink_left = 0
 
         self.setWindowTitle(window_title("老虎机奖励"))
         self.setWindowFlags(
@@ -272,6 +313,13 @@ class SlotMachineDialog(QDialog):
         self._result_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self._result_label)
 
+        self._near_miss_label = QLabel("差一点！", self)
+        self._near_miss_label.setAlignment(Qt.AlignCenter)
+        self._near_miss_label.setStyleSheet(
+            f"color: {_NEAR_MISS_COLOR}; font-size: 15px; font-weight: 700;"
+        )
+        self._near_miss_label.setVisible(False)
+        layout.addWidget(self._near_miss_label)
         self._close_btn = QPushButton("收下", self)
         self._close_btn.setObjectName("Primary")
         self._close_btn.clicked.connect(self.accept)
@@ -317,10 +365,15 @@ class SlotMachineDialog(QDialog):
         if kind == "none":
             text = "没有匹配，本次没有额外奖励"
             color = TEXT_MUTED
-            if sfx is not None and self._result.count(_SYM_MISS) < 3:
-                # 差一格（如 金××）：换掉一个 ✕ 就是两同 → 差一点提示
-                # 全 ✕（×××）离中奖两格，不放近失音
-                sfx.play_slot_near_miss()
+            near_miss = self._result.count(_SYM_MISS) < 3
+            if near_miss:
+                # 差一格（如 金××）：换掉一个 ✕ 就是两同。
+                # 静置一拍再揭晓（悬念节拍），音画同步。
+                self._near_miss_active = True
+                self._reveal_timer = QTimer(self)
+                self._reveal_timer.setSingleShot(True)
+                self._reveal_timer.timeout.connect(self._reveal_near_miss)
+                self._reveal_timer.start(_NEAR_MISS_DELAY_MS)
         else:
             for i in range(3):
                 if self._result[i] == sym:
@@ -340,6 +393,41 @@ class SlotMachineDialog(QDialog):
         self._close_btn.setFocus()
         self._result_shown = True
 
+    def _reveal_near_miss(self) -> None:
+        """近失揭晓：两格 ✕ 弹一下 + "差一点！"标签闪烁 + 音效。"""
+        if self._finalized or not self._near_miss_active:
+            return
+        sfx = _get_sfx()
+        if sfx is not None:
+            sfx.play_slot_near_miss()
+        for i, s in enumerate(self._result):
+            if s == _SYM_MISS:
+                self._reels[i].nudge(times=2)
+        self._near_miss_label.setVisible(True)
+        self._blink_left = _BLINK_TOTAL
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._blink_near_miss)
+        self._blink_timer.start(_BLINK_MS)
+
+    def _blink_near_miss(self) -> None:
+        self._blink_left -= 1
+        if self._blink_left <= 0:
+            if self._blink_timer is not None:
+                self._blink_timer.stop()
+            self._near_miss_label.setStyleSheet(
+                f"color: {_NEAR_MISS_COLOR}; font-size: 15px; font-weight: 700;"
+            )
+            return
+        # 奇偶交替明暗：亮 → 暗 → 亮 …，最后一次定格为亮
+        if self._blink_left % 2:
+            self._near_miss_label.setStyleSheet(
+                f"color: {_NEAR_MISS_COLOR}; font-size: 15px; font-weight: 700;"
+            )
+        else:
+            self._near_miss_label.setStyleSheet(
+                "color: #5a5e6e; font-size: 15px; font-weight: 700;"
+            )
+
     # ---- 结算（幂等，唯一入口）----
 
     def _finalize(self) -> None:
@@ -355,8 +443,13 @@ class SlotMachineDialog(QDialog):
     def _stop_all_timers(self) -> None:
         for timer in self._stop_timers:
             timer.stop()
+        if self._reveal_timer is not None:
+            self._reveal_timer.stop()
+        if self._blink_timer is not None:
+            self._blink_timer.stop()
         for reel in self._reels:
             reel.stop_timer()
+            reel.stop_nudge()
 
     def bonus_reward(self) -> Reward:
         return self._bonus
