@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -102,6 +103,12 @@ def compute_bonus(
         return Reward(gold=round(eff * r.uniform(lo, hi), 2))
     eff = base.diamond if base.diamond > 0 else _FALLBACK_BASE
     return Reward(diamond=round(eff * r.uniform(lo, hi), 2))
+
+
+def _get_sfx():
+    """从主 Application 取 SfxPlayer（测试/无主程序时返回 None）。"""
+    app = QApplication.instance()
+    return getattr(app, "sfx", None)
 
 
 class _ReelWidget(QWidget):
@@ -274,6 +281,9 @@ class SlotMachineDialog(QDialog):
     # ---- 动画 ----
 
     def _start_spin(self) -> None:
+        sfx = _get_sfx()
+        if sfx is not None:
+            sfx.play_slot_spin()
         for reel in self._reels:
             reel.start_spin()
         for i in range(3):
@@ -289,17 +299,28 @@ class SlotMachineDialog(QDialog):
     def _on_reel_stopped(self) -> None:
         if self._finalized:
             return
+        sfx = _get_sfx()
+        if sfx is not None:
+            sfx.play_slot_reel_stop()
         self._stopped_count += 1
         if self._stopped_count >= 3 and not self._result_shown:
+            sfx = _get_sfx()
+            if sfx is not None:
+                sfx.stop_slot_spin()
             self._on_all_stopped()
 
     def _on_all_stopped(self) -> None:
         if self._finalized or self._result_shown:
             return
         kind, sym = _match_of(*self._result)
+        sfx = _get_sfx()
         if kind == "none":
             text = "没有匹配，本次没有额外奖励"
             color = TEXT_MUTED
+            if sfx is not None and self._result.count(_SYM_MISS) < 3:
+                # 差一格（如 金××）：换掉一个 ✕ 就是两同 → 差一点提示
+                # 全 ✕（×××）离中奖两格，不放近失音
+                sfx.play_slot_near_miss()
         else:
             for i in range(3):
                 if self._result[i] == sym:
@@ -309,6 +330,8 @@ class SlotMachineDialog(QDialog):
             match_name = "三同" if kind == "triple" else "两同"
             text = f"{match_name}{_SYM_CHAR[sym]}！额外 +{format_amount(amount)} {currency}"
             color = _SYM_COLOR[sym]
+            if sfx is not None:
+                sfx.play_slot_win()
         self._result_label.setText(text)
         self._result_label.setStyleSheet(
             f"color: {color}; font-size: 14px; font-weight: 600;"
@@ -323,6 +346,9 @@ class SlotMachineDialog(QDialog):
         if self._finalized:
             return
         self._finalized = True
+        sfx = _get_sfx()
+        if sfx is not None:
+            sfx.stop_slot_spin()
         self._stop_all_timers()
         self.reward_decided.emit(self._bonus)
 

@@ -4,6 +4,7 @@ import struct
 import wave
 
 SR = 44100
+LOOP_CYCLE = 1764  # 40ms；44.1k 下整周期采样数，保证首尾相接无缝
 
 
 def _env(t: float, attack: float, dur: float) -> float:
@@ -33,6 +34,52 @@ def _tick(dur: float = 0.09, f0: float = 2400.0) -> bytes:
         y = band[1]
         v = y * _env(t, 0.004, dur)
         out += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 32000))
+    return bytes(out)
+
+
+def _spin(dur: float = 1.2) -> bytes:
+    """转轮循环声：低频齿轮嗡鸣 + 周期性"哒哒"脉冲。
+
+    周期固定 40ms（LOOP_CYCLE 采样），循环播放时首尾相位一致，无咔哒接缝。
+    """
+    n = int(SR * dur)
+    out = bytearray()
+    for i in range(n):
+        t = i / SR
+        phase = i % LOOP_CYCLE  # 周期内相位
+        ph_norm = phase / LOOP_CYCLE
+        # 低频震颤（两个近频正弦拍频，形成齿轮嗡嗡声）
+        # 55/60Hz 在 1.2s 内均为整数周期 → 循环接缝无爆音
+        hum = (
+            math.sin(2 * math.pi * 55 * t) * 0.30
+            + math.sin(2 * math.pi * 60 * t) * 0.24
+        )
+        # 周期脉冲：每 40ms 一滚过一格的"哒"（1102.5Hz 正弦 = 周期内 44 整周期）
+        tick_env = math.exp(-ph_norm * 14.0)
+        tick = math.sin(2 * math.pi * 44 * ph_norm) * tick_env * 0.16
+        # 高频气流噪声（转轮摩擦），幅度随周期内相位起落（无缝）
+        air = random.uniform(-1.0, 1.0)
+        air *= 0.06 + 0.05 * (1.0 - ph_norm)
+        v = hum + tick + air
+        out += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 20000))
+    return bytes(out)
+
+
+def _win(dur: float = 0.55) -> bytes:
+    """中奖短句：C5-E5-G5-C6 上行琶音，尾音带泛音铃感。"""
+    notes = [523.25, 659.25, 783.99, 1046.50]
+    n = int(SR * dur)
+    out = bytearray()
+    note_len = dur / len(notes)
+    for i in range(n):
+        t = i / SR
+        idx = min(int(t / note_len), len(notes) - 1)
+        note_t = t - idx * note_len
+        f = notes[idx]
+        v = math.sin(2 * math.pi * f * t) * 0.42
+        v += math.sin(2 * math.pi * f * 2 * t) * 0.12
+        v *= math.exp(-note_t * 4.5)
+        out += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 26000))
     return bytes(out)
 
 
@@ -75,5 +122,7 @@ if __name__ == "__main__":
     os.makedirs(sounds, exist_ok=True)
     _write(os.path.join(sounds, "reel_stop.wav"), _tick())
     _write(os.path.join(sounds, "near_miss.wav"), _near())
-    print("written: reel_stop.wav, near_miss.wav")
+    _write(os.path.join(sounds, "slot_win.wav"), _win())
+    _write(os.path.join(sounds, "slot_spin.wav"), _spin())
+    print("written: reel_stop.wav, near_miss.wav, slot_win.wav, slot_spin.wav")
     sys.exit(0)

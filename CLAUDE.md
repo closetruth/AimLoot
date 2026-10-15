@@ -113,7 +113,7 @@ Folder-style accounting: parent task `earned_*` / display totals sync from subta
 - `src/op_tracker.py` — sliding 60s window of op timestamps (in-memory only).
 - `src/active_time.py` — increments focused leaf or flat task `active_seconds` every 1s tick.
 - `src/power_monitor.py` — `should_count_time()`: false when display is off.
-- `src/sfx.py` — Qt Multimedia. Gold = `roll_gold.*`; diamond = `roll_diamond.*`; grid fill = `grid_full.*` then 8% overlay `ease/`; chest bag = `chest_get.*`; `op/` `ease/` `aim/` folders pick at random. Op tick / grid full / ease full only play when `TaskManager.will_count_operation()` is true (claim chest / complete goal are not gated). Defaults: `sound_op_chance=0.2`, `sound_grid_ease_chance=0.08` (legacy 0.4 / 0.25 migrate on load).
+- `src/sfx.py` — Qt Multimedia. Gold = `roll_gold.*`; diamond = `roll_diamond.*`; grid fill = `grid_full.*` then 8% overlay `ease/`; chest bag = `chest_get.*`; slot machine = `slot_spin.*` (looping, `play_slot_spin`/`stop_slot_spin`) + `reel_stop.*` / `slot_win.*` / `near_miss.*`; `op/` `ease/` `aim/` folders pick at random. Op tick / grid full / ease full only play when `TaskManager.will_count_operation()` is true (claim chest / complete goal are not gated). Defaults: `sound_op_chance=0.2`, `sound_grid_ease_chance=0.08` (legacy 0.4 / 0.25 migrate on load). Slot sounds regenerate via `tools/gen_slot_sounds.py`.
 - `src/win_utils.py` — pin to all desktops (pyvda), startup registry. No-ops on non-Windows.
 
 ### Game subprocess protocol

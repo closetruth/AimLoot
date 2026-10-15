@@ -269,6 +269,60 @@ class SfxGridFullTests(unittest.TestCase):
         self.assertEqual(src, "chest_get.wav")
 
 
+class SfxSlotTests(unittest.TestCase):
+    """老虎机音效：循环转轮声可停、停轴咔哒、中奖/近失短音。"""
+
+    def _player_with_slot_sounds(self) -> SfxPlayer:
+        _install_sounds(
+            self,
+            [
+                "slot_spin.wav",
+                "reel_stop.wav",
+                "slot_win.wav",
+                "near_miss.wav",
+            ],
+        )
+        return _forced_player()
+
+    def test_spin_loops_on_slot_lane_and_stops(self) -> None:
+        sfx = self._player_with_slot_sounds()
+        self.addCleanup(sfx.shutdown)
+        sfx.play_slot_spin()
+        voice = sfx._exclusive.get("slot")
+        self.assertIsNotNone(voice, "转轮声应占 slot 独占声道")
+        self.assertEqual(voice.loops, -1, "转轮声应循环播放")
+        src = Path(voice.player.source().toLocalFile()).name
+        self.assertEqual(src, "slot_spin.wav")
+        sfx.stop_slot_spin()
+        self.assertFalse(voice.busy, "stop 后声道应空闲")
+        self.assertFalse(sfx._slot_active)
+
+    def test_stop_without_spin_is_noop(self) -> None:
+        sfx = self._player_with_slot_sounds()
+        self.addCleanup(sfx.shutdown)
+        sfx.stop_slot_spin()  # 不应抛异常
+        self.assertEqual(sfx._exclusive, {})
+
+    def test_spin_stops_when_sound_disabled(self) -> None:
+        """capable() 为假（没文件）时不应建声道。"""
+        _install_sounds(self, ["op/a.wav"])  # 无 slot 文件
+        sfx = _forced_player()
+        self.addCleanup(sfx.shutdown)
+        sfx.play_slot_spin()
+        self.assertEqual(sfx._exclusive, {})
+
+    def test_reel_stop_and_win_and_near_miss(self) -> None:
+        sfx = self._player_with_slot_sounds()
+        self.addCleanup(sfx.shutdown)
+        sfx.play_slot_reel_stop()
+        sfx.play_slot_win()
+        sfx.play_slot_near_miss()
+        lanes = [v.lane for v in sfx._pool if v.busy]
+        self.assertIn("reel", lanes)
+        self.assertIn("win", lanes)
+        self.assertIn("near", lanes)
+
+
 class SfxVoicePoolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.sfx = _forced_player()

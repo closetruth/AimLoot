@@ -50,6 +50,52 @@ def _pump(ms: int) -> None:
     _app.processEvents()
 
 
+class _RecordingSfx:
+    """记录调用的假 SfxPlayer，用 app.sfx 注入。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def play_slot_spin(self) -> None:
+        self.calls.append("spin")
+
+    def stop_slot_spin(self) -> None:
+        self.calls.append("stop")
+
+    def play_slot_reel_stop(self) -> None:
+        self.calls.append("reel")
+
+    def play_slot_win(self) -> None:
+        self.calls.append("win")
+
+    def play_slot_near_miss(self) -> None:
+        self.calls.append("near")
+
+
+class _SfxInjection(unittest.TestCase):
+    """基类：把 _RecordingSfx 挂到 app.sfx，测试结束还原。"""
+
+    _sfx: _RecordingSfx
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._sfx = _RecordingSfx()
+        had = hasattr(_app, "sfx")
+        old = getattr(_app, "sfx", None)
+        _app.sfx = self._sfx
+
+        def _restore() -> None:
+            if had:
+                _app.sfx = old
+            else:
+                try:
+                    del _app.sfx
+                except AttributeError:
+                    pass
+
+        self.addCleanup(_restore)
+
+
 def _make_dialog(base: Reward | None = None, result=None) -> SlotMachineDialog:
     dlg = SlotMachineDialog(base or Reward(), task_title="测试目标", result=result)
     dlg.show()
@@ -117,7 +163,7 @@ class PureFunctionTests(unittest.TestCase):
             self.assertTrue(all(s in strip for s in result))
 
 
-class SlotMachineDialogTests(unittest.TestCase):
+class SlotMachineDialogTests(_SfxInjection):
     def test_accept_awards_bonus_once(self):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
         got: list[object] = []
@@ -134,6 +180,33 @@ class SlotMachineDialogTests(unittest.TestCase):
         self.assertEqual(len(got), 1, "重复收下不得重复结算")
         dlg.close()
 
+    def test_spin_sfx_plays_reel_ticks_and_win(self):
+        """转动全程音效：开转 → 3 次停轴 → 中奖音，三轴停稳后循环声即停。"""
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
+        _wait_result(dlg)
+        self.assertEqual(self._sfx.calls[0], "spin", "构造后应立即开转音")
+        self.assertEqual(self._sfx.calls.count("reel"), 3, "每轴停稳各一声")
+        self.assertIn("win", self._sfx.calls, "三同应有中奖音")
+        self.assertIn("stop", self._sfx.calls, "三轴停稳后循环声应停")
+        dlg.close()
+
+    def test_near_miss_sfx_on_one_away(self):
+        """金××（差一格）：不中奖但播差一点提示音。"""
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 2, 2))
+        _wait_result(dlg)
+        self.assertTrue(dlg.bonus_reward().is_empty())
+        self.assertIn("near", self._sfx.calls)
+        self.assertNotIn("win", self._sfx.calls)
+        dlg.close()
+
+    def test_all_miss_sfx_is_silent(self):
+        """×××：离中奖两格，不放近失音。"""
+        dlg = _make_dialog(Reward(gold=1.0), result=(2, 2, 2))
+        _wait_result(dlg)
+        self.assertNotIn("near", self._sfx.calls)
+        self.assertNotIn("win", self._sfx.calls)
+        dlg.close()
+
     def test_escape_before_stop_still_awards(self):
         """转动中 Esc：跳过后仍必须结算一次（历史 bug：奖励丢失）。"""
         dlg = _make_dialog(Reward(), result=(1, 1, 1))
@@ -146,6 +219,7 @@ class SlotMachineDialogTests(unittest.TestCase):
         self.assertEqual(len(got), 1, "转动中 Esc 必须结算一次奖励")
         self.assertTrue(0.3 <= got[0].diamond <= 1.0)
         self.assertFalse(dlg.isVisible())
+        self.assertIn("stop", self._sfx.calls, "Esc 结算也必须停循环声")
         dlg.close()
 
     def test_escape_immediately_awards(self):
@@ -157,6 +231,7 @@ class SlotMachineDialogTests(unittest.TestCase):
         _app.processEvents()
         self.assertEqual(len(got), 1)
         self.assertFalse(dlg.isVisible())
+        self.assertIn("stop", self._sfx.calls)
         dlg.close()
 
     def test_reject_after_reveal_awards_once(self):
@@ -186,6 +261,7 @@ class SlotMachineDialogTests(unittest.TestCase):
             self.assertFalse(reel._timer.isActive(), "轴计时器必须停")
         for timer in dlg._stop_timers:
             self.assertFalse(timer.isActive(), "停轴计时器必须停")
+        self.assertIn("stop", self._sfx.calls)
 
     def test_chest_claim_opens_slot_and_bonus_lands(self):
         """集成回归：领宝箱弹老虎机，bonus 信号入账。"""

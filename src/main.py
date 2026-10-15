@@ -108,6 +108,7 @@ class Application(QObject):
                     "时长已经达标的，选中后即可点「完成」。",
                 )
         self.sfx = SfxPlayer(self.state.settings)
+        self.qt_app.sfx = self.sfx  # 弹窗（如老虎机）从小部件树上取用
         self.sfx.bgm_finished.connect(self._on_bgm_finished)
         if self.sfx.capable():
             self.sfx.prewarm()

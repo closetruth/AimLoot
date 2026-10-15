@@ -24,11 +24,15 @@ _GOLD_STEM = "roll_gold"
 _DIAMOND_STEM = "roll_diamond"
 _GRID_STEM = "grid_full"
 _CHEST_STEM = "chest_get"
+_SLOT_SPIN_STEM = "slot_spin"
+_SLOT_REEL_STOP_STEM = "reel_stop"
+_SLOT_WIN_STEM = "slot_win"
+_SLOT_NEAR_MISS_STEM = "near_miss"
 _RANDOM_FOLDERS = ("op", "ease", "aim")
 _PREWARM_MS = 500
 _MAX_VOICES = 8
 _MAX_OP_VOICES = 3
-_SHORT_LANES = frozenset({"op", "gold", "diamond", "grid", "chest"})
+_SHORT_LANES = frozenset({"op", "gold", "diamond", "grid", "chest", "slot", "reel", "win", "near"})
 _NO_WINDOW = 0x08000000
 _OP_VOLUME_SCALE = 0.4
 _DEFAULT_OP_CHANCE = 0.2
@@ -87,6 +91,7 @@ def _probe_sound_files() -> bool:
         or _stem_exists(_DIAMOND_STEM)
         or _stem_exists(_GRID_STEM)
         or _stem_exists(_CHEST_STEM)
+        or _stem_exists(_SLOT_SPIN_STEM)
     ):
         return True
     return any(_iter_sound_dir(_sounds_dir() / name) for name in _RANDOM_FOLDERS)
@@ -182,13 +187,14 @@ def bgm_song_list() -> List[Dict[str, object]]:
 
 
 class _Voice:
-    __slots__ = ("player", "output", "busy", "lane")
+    __slots__ = ("player", "output", "busy", "lane", "loops")
 
     def __init__(self, player: object, output: object) -> None:
         self.player = player
         self.output = output
         self.busy = False
         self.lane = ""
+        self.loops = 1
 
 
 class SfxPlayer(QObject):
@@ -205,6 +211,7 @@ class SfxPlayer(QObject):
         self._skip: set[str] = set()
         self._folder_cache: Dict[str, List[Path]] = {}
         self._prewarm_timer: Optional[QTimer] = None
+        self._slot_active = False
         self._bgm_player: Optional[object] = None
         self._bgm_output: Optional[object] = None
         self._bgm_name: str = ""
@@ -396,6 +403,52 @@ class SfxPlayer(QObject):
             return
         self._play_exclusive("aim", path)
 
+    def play_slot_spin(self) -> None:
+        """老虎机开转：循环转轮声，弹窗关闭时调用 stop_slot_spin。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_SPIN_STEM)
+        if path is None:
+            return
+        self._slot_active = True
+        self._play_exclusive("slot", path, volume_scale=0.7, loops=-1)
+
+    def stop_slot_spin(self) -> None:
+        """停转轮循环声（未在转时 no-op）。"""
+        if not self._slot_active:
+            return
+        self._slot_active = False
+        self._stop_lane("slot")
+
+    def play_slot_reel_stop(self) -> None:
+        """单轴停稳：短促咔哒。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_REEL_STOP_STEM)
+        if path is None:
+            return
+        self._play("reel", path)
+
+    def play_slot_win(self) -> None:
+        """三个轴停稳且中奖：中奖短音。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_WIN_STEM)
+        if path is None:
+            path = self._pick_from("aim")
+        if path is None:
+            return
+        self._play("win", path)
+
+    def play_slot_near_miss(self) -> None:
+        """两同 + 未中：差一点提示音。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_NEAR_MISS_STEM)
+        if path is None:
+            return
+        self._play("near", path)
+
     def _gold_path(self) -> Optional[Path]:
         return _find_stem(_GOLD_STEM)
 
@@ -422,7 +475,9 @@ class SfxPlayer(QObject):
             return
         self._start_voice(voice, lane, src, self._volume() * volume_scale, pooled=True)
 
-    def _play_exclusive(self, lane: str, src: Path, volume_scale: float = 1.0) -> None:
+    def _play_exclusive(
+        self, lane: str, src: Path, volume_scale: float = 1.0, loops: int = 1
+    ) -> None:
         voice = self._exclusive.get(lane)
         if voice is None:
             voice = self._new_voice()
@@ -431,7 +486,18 @@ class SfxPlayer(QObject):
             self._exclusive[lane] = voice
         else:
             self._stop_player(voice.player)
-        self._start_voice(voice, lane, src, self._volume() * volume_scale, pooled=False)
+        self._start_voice(
+            voice, lane, src, self._volume() * volume_scale, pooled=False, loops=loops
+        )
+
+    def _stop_lane(self, lane: str) -> None:
+        """停掉某独占声道（循环音停播用；声道保留待复用）。"""
+        voice = self._exclusive.get(lane)
+        if voice is None:
+            return
+        voice.busy = False
+        voice.loops = 1
+        self._stop_player(voice.player)
 
     def _start_voice(
         self,
@@ -441,6 +507,7 @@ class SfxPlayer(QObject):
         volume: float,
         *,
         pooled: bool,
+        loops: int = 1,
     ) -> None:
         ready = qt_ready_path(src)
         try:
@@ -449,9 +516,13 @@ class SfxPlayer(QObject):
             player.stop()  # type: ignore[attr-defined]
             player.setSource(QUrl())
             player.setSource(QUrl.fromLocalFile(str(ready.resolve())))
+            set_loops = getattr(player, "setLoops", None)
+            if set_loops is not None:
+                set_loops(loops)
             player.setPosition(0)  # type: ignore[attr-defined]
             player.play()  # type: ignore[attr-defined]
             voice.lane = lane
+            voice.loops = loops
             # stop/清 source 可能同步打出 EndOfMedia，把刚占用的声道放掉
             self._mark_busy(voice, pooled=pooled)
         except Exception as exc:
@@ -563,6 +634,7 @@ class SfxPlayer(QObject):
         self._busy_order.clear()
         self._exclusive.clear()
         self._folder_cache.clear()
+        self._slot_active = False
 
     def _prewarm_now(self) -> None:
         if not self.capable():
