@@ -631,21 +631,22 @@ class FloatingWidget(QWidget):
         self.chest_bagged.emit()
 
     def _show_slot_machine(self, rarity: int) -> None:
-        """领宝箱后弹简单老虎机；额外奖励经信号入账。"""
+        """领宝箱后弹简单老虎机；产出经信号入账。"""
         dialog = SlotMachineDialog(
             Reward(),
             task_title=f"{CHEST_RARITY_NAMES[rarity]}宝箱",
             parent=self,
         )
-        dialog.reward_decided.connect(self._apply_slot_bonus)
+        dialog.prize_decided.connect(self._apply_slot_prizes)
         dialog.exec()
         dialog.deleteLater()
 
-    def _apply_slot_bonus(self, bonus: Reward) -> None:
-        if bonus.is_empty():
-            return
-        self.state.inventory.add(bonus)
-        self._paint_global_stats()
+    def _apply_slot_prizes(self, prizes: object) -> None:
+        from .ui_slot_machine import SlotPrizes
+
+        if isinstance(prizes, SlotPrizes):
+            prizes.apply(self.state.inventory)
+            self._paint_global_stats()
 
     def _update_roll_bar(self) -> None:
         rt = self.state.roll_runtime

@@ -102,7 +102,7 @@ Folder-style accounting: parent task `earned_*` / display totals sync from subta
 - `src/task_dialog.py` — Goal management dialog (includes week tab).
 - `src/inventory_dialog.py` — Inventory, chests, letters, game entry buttons; gold speedup / instant / batch open.
 - `src/ui_chest_summary.py` — Short result panel after instant / batch open (no per-chest animation).
-- `src/ui_slot_machine.py` — `SlotMachineDialog`: 3-reel bonus spin (金/钻/×) on goal completion (`goal_actions`), subtask claim (`main._on_subtask_claimed`), and chest claim (`widget`); result decided at construction, `reward_decided` emits exactly once via `_finalize` on any close path.
+- `src/ui_slot_machine.py` — `SlotMachineDialog`: classic 3-reel bonus spin (金/钻/字/♪/×, triple-only; left-reel 字 pays 1 letter = cherry). Prizes = gold/diamond + letters + song tokens (`SlotPrizes`, `prize_decided` exactly once via `_finalize`). Triggers: goal completion (`goal_actions`), subtask claim (`main._on_subtask_claimed`), chest claim (`widget`).
 - `src/ui_task_tree.py` — `TreeRow`, action buttons, GoalBlock QSS.
 - `src/ui_goal_tree_panel.py` — `GoalTreePanel` embedded in `TaskCard`.
 - `src/goal_actions.py` — `try_complete_goal`, `try_delete_goal` with confirmation.
@@ -113,7 +113,7 @@ Folder-style accounting: parent task `earned_*` / display totals sync from subta
 - `src/op_tracker.py` — sliding 60s window of op timestamps (in-memory only).
 - `src/active_time.py` — increments focused leaf or flat task `active_seconds` every 1s tick.
 - `src/power_monitor.py` — `should_count_time()`: false when display is off.
-- `src/sfx.py` — Qt Multimedia. Gold = `roll_gold.*`; diamond = `roll_diamond.*`; grid fill = `grid_full.*` then 8% overlay `ease/`; chest bag = `chest_get.*`; slot machine = `slot_spin.*` (looping, `play_slot_spin`/`stop_slot_spin`) + `reel_stop.*` / `slot_win.*` / `near_miss.*`; `op/` `ease/` `aim/` folders pick at random. Op tick / grid full / ease full only play when `TaskManager.will_count_operation()` is true (claim chest / complete goal are not gated). Defaults: `sound_op_chance=0.2`, `sound_grid_ease_chance=0.08` (legacy 0.4 / 0.25 migrate on load). Slot sounds regenerate via `tools/gen_slot_sounds.py`.
+- `src/sfx.py` — Qt Multimedia. Gold = `roll_gold.*`; diamond = `roll_diamond.*`; grid fill = `grid_full.*` then 8% overlay `ease/`; chest bag = `chest_get.*`; slot machine = `slot_spin.*` (looping, `play_slot_spin`/`stop_slot_spin`) + `reel_stop.*` / `slot_win.*` / `near_miss.*`; `op/` `ease/` `aim/` folders pick at random. Op tick / grid full / ease full only play when `TaskManager.will_count_operation()` is true (claim chest / complete goal are not gated). Defaults: `sound_op_chance=0.2`, `sound_grid_ease_chance=0.08` (legacy 0.4 / 0.25 migrate on load). Slot sounds regenerate via `tools/gen_slot_sounds.py`. `aim/` folder doubles as the song library: song price = letters in its filename (`_song_letter_counts`), playable free with a song token (`Inventory.song_tokens`, won from the slot machine).
 - `src/win_utils.py` — pin to all desktops (pyvda), startup registry. No-ops on non-Windows.
 
 ### Game subprocess protocol

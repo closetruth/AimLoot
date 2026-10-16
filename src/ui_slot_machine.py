@@ -1,6 +1,7 @@
 """老虎机弹窗：完成目标 / 领取宝箱时弹出，转出额外奖励。
 
-三轴转轮，符号池：金 / 钻 / ×。三同大奖、两同小奖、无匹配空手。
+经典三轴机制：三同才中奖（金/钻/字母/音符四种面）。
+「字」在最左轴额外给 1 枚字母（真机"樱桃"式部分赔付，总中奖率 ~25%）。
 结果与奖励在构造时一次性生成（纯展示 + 提前结算）：任何路径关闭
 （收下 / Esc / 关窗）都会经 _finalize 恰好结算一次，奖励不丢。
 """
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import dataclass, field
 from functools import partial
 from typing import List, Optional, Tuple
 
@@ -24,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from .branding import window_title
-from .models import Reward
+from .models import Inventory, Reward
 from .ui_styles import BG_CARD, BORDER, DARK_BASE_QSS, TEXT_MUTED
 from .ui_text import format_amount, format_reward_gain
 
@@ -36,23 +38,44 @@ QLabel#SlotResult {{ font-size: 14px; font-weight: 600; min-height: 40px; }}
 
 _SYM_COIN = 0
 _SYM_DIAMOND = 1
-_SYM_MISS = 2
+_SYM_LETTER = 2   # 字：给字母
+_SYM_NOTE = 3     # ♪：给试听券
+_SYM_MISS = 4
 
-# 每轴独立均匀取样；计数：金 6/12、钻 3/12、× 3/12
-_REEL_STRIP = (0, 0, 0, 1, 0, 2, 1, 0, 2, 0, 1, 2)
+# 每轴独立均匀取样；计数：金5 钻2 字2 ♪2 ×1（12 格）。
+# 三同金 7.2% / 三同钻·字·♪ 各 0.46%；2 个 ✕ 时"字/♪/金"停在左轴再做近失演出。
+_REEL_STRIP = (0, 0, 1, 2, 0, 3, 4, 0, 1, 2, 0, 3)
 _STRIP_LEN = len(_REEL_STRIP)
 
-_SYM_CHAR = {_SYM_COIN: "金", _SYM_DIAMOND: "钻", _SYM_MISS: "×"}
-_SYM_COLOR = {_SYM_COIN: "#f5c842", _SYM_DIAMOND: "#5ec8f2", _SYM_MISS: "#5a5e6e"}
-
-# (匹配类型, 符号) -> (倍率下界, 倍率上界)，作用于 base 对应币种
-_PAYOUTS = {
-    ("triple", _SYM_COIN): (1.5, 4.0),
-    ("triple", _SYM_DIAMOND): (0.3, 1.0),
-    ("pair", _SYM_COIN): (0.3, 1.2),
-    ("pair", _SYM_DIAMOND): (0.05, 0.3),
+_SYM_CHAR = {
+    _SYM_COIN: "金",
+    _SYM_DIAMOND: "钻",
+    _SYM_LETTER: "字",
+    _SYM_NOTE: "♪",
+    _SYM_MISS: "×",
 }
-_FALLBACK_BASE = 1.0  # base 该币种为 0 时的兜底基准（宝箱场景也有实奖）
+_SYM_COLOR = {
+    _SYM_COIN: "#f5c842",
+    _SYM_DIAMOND: "#5ec8f2",
+    _SYM_LETTER: "#7dcc96",   # 与宝箱稀有度"罕见"同系的绿
+    _SYM_NOTE: "#c9a0ff",     # 紫
+    _SYM_MISS: "#5a5e6e",
+}
+
+# 三同倍率（金/钻作用于 base 对应币种）；字/♪ 三同给固定数量
+_TRIPLE_PAYOUTS = {
+    _SYM_COIN: (1.5, 4.0),
+    _SYM_DIAMOND: (0.3, 1.0),
+}
+_TRIPLE_LETTER_COUNT = 3   # 三同字 → 3 枚字母（各自独立抽稀有度）
+_TRIPLE_NOTE_COUNT = 3     # 三同♪ → 3 张试听券
+_LEFT_LETTER_FLOOR = 1     # 最左轴"字"的樱桃赔付：1 枚字母
+_FALLBACK_BASE = 1.0       # base 该币种为 0 时的兜底基准（宝箱场景也有实奖）
+
+# 字母开出时的稀有度权重：普通/罕见/稀有/史诗/传奇
+_LETTER_RARITY_WEIGHTS = (55, 25, 13, 5, 2)
+_LETTER_RARITY_NAMES = ("普通", "罕见", "稀有", "史诗", "传奇")
+_LETTER_RARITY_COLORS = ("#c8c0b4", "#7dcc96", "#7aa2ff", "#c9a0ff", "#ffd56a")
 
 _TICK_MS = 16             # 60fps 连续滚动
 _SPIN_CELLS_PER_SEC = 18.0  # 匀速滚动速度（格/秒）
@@ -82,41 +105,114 @@ def spin_result(rng: Optional[random.Random] = None) -> Tuple[int, int, int]:
     return (r.choice(_REEL_STRIP), r.choice(_REEL_STRIP), r.choice(_REEL_STRIP))
 
 
-def _match_of(s0: int, s1: int, s2: int) -> Tuple[str, Optional[int]]:
-    """返回 ("triple", sym) / ("pair", sym) / ("none", None)。
-
-    全同且非 × → triple；某金/钻恰好出现 2 次 → pair；其余 → none。
-    """
-    if s0 == s1 == s2:
-        return ("triple", s0) if s0 != _SYM_MISS else ("none", None)
-    for sym in (_SYM_COIN, _SYM_DIAMOND):
-        if (s0, s1, s2).count(sym) == 2:
-            return ("pair", sym)
-    return ("none", None)
+def _match_of(s0: int, s1: int, s2: int) -> Optional[int]:
+    """经典三轴：只有三同（非 ×）才中奖，返回中奖符号；否则 None。"""
+    if s0 == s1 == s2 and s0 != _SYM_MISS:
+        return s0
+    return None
 
 
 def third_has_suspense(result: Tuple[int, int, int]) -> bool:
-    """第三轴是否值得减速停：前两轴同号（冲三同/近失），
-    或恰有一个 ✕（第三轴决定救回两同还是差一点）。
-    金钻混排看起来不沾边，快停快揭。"""
+    """第三轴是否值得减速停：前两轴同号（且非 ✕）——第三轴真有机会凑三同。
+
+    三同制下没有两同小奖，所以 金×_ / 金钻_ 都不构成悬念（必不中），快停快揭。
+    """
     a, b = result[0], result[1]
-    if a == b:
-        return True
-    return (a == _SYM_MISS) != (b == _SYM_MISS)
+    return a == b and a != _SYM_MISS
 
 
 def hot_symbol_for(last_symbol: int, prev_symbols: Tuple[int, ...]) -> Optional[int]:
-    """减速停轴时最后停的若是 ×，"热符号"应是前两轴里出现的金/钻。
+    """减速停轴时最后停的若是 ×，"热符号"应是前两轴里出现的非 × 符号。
 
     定格瞬间中心停在热符号上、上格悬着 ×，制造"差一点掉下来"的画面。
     没有热符号（如 ×× 开局）时返回 None。
     """
     if last_symbol != _SYM_MISS:
         return None
-    for sym in (_SYM_COIN, _SYM_DIAMOND):
+    for sym in (_SYM_COIN, _SYM_DIAMOND, _SYM_LETTER, _SYM_NOTE):
         if sym in prev_symbols:
             return sym
     return None
+
+
+@dataclass
+class SlotPrizes:
+    """老虎机一次转动的全部产出：钱 + 字母 + 试听券。"""
+
+    reward: Reward = field(default_factory=Reward)
+    # [(字母, 稀有度 0-4), ...]
+    letters: List[Tuple[str, int]] = field(default_factory=list)
+    # {歌名: 张数}
+    song_tokens: dict = field(default_factory=dict)
+
+    def is_empty(self) -> bool:
+        return self.reward.is_empty() and not self.letters and not self.song_tokens
+
+    def apply(self, inventory: Inventory) -> None:
+        """全部入账（空奖励天然无害）。"""
+        if not self.reward.is_empty():
+            inventory.add(self.reward)
+        for letter, rarity in self.letters:
+            inventory.add_letter(letter, rarity)
+        for name, count in self.song_tokens.items():
+            inventory.add_song_token(name, count)
+
+
+def draw_letter_prize(rng: Optional[random.Random] = None) -> Tuple[str, int]:
+    """开出一枚随机字母 + 加权稀有度。"""
+    r = rng if rng is not None else random.Random()
+    letter = chr(ord("A") + r.randrange(26))
+    rarity = r.choices(range(5), weights=_LETTER_RARITY_WEIGHTS)[0]
+    return letter, int(rarity)
+
+
+def song_names() -> List[str]:
+    """可开出试听券的歌曲名列表（aim/ 文件夹）。"""
+    from .sfx import bgm_song_list
+
+    return [str(s["name"]) for s in bgm_song_list()]
+
+
+def compute_prizes(
+    s0: int,
+    s1: int,
+    s2: int,
+    base_reward: Optional[Reward] = None,
+    rng: Optional[random.Random] = None,
+) -> SlotPrizes:
+    """按结果结算全部产出。
+
+    - 三同金/钻：金/钻倍率（作用于 base 对应币种，空 base 兜底 1.0）
+    - 三同字：3 枚字母；三同♪：3 张随机歌曲试听券
+    - 最左轴是「字」（非三同）：1 枚字母（樱桃式部分赔付）
+    """
+    r = rng if rng is not None else random.Random()
+    base = base_reward if base_reward is not None else Reward()
+    prizes = SlotPrizes()
+    triple = _match_of(s0, s1, s2)
+    if triple == _SYM_COIN or triple == _SYM_DIAMOND:
+        lo, hi = _TRIPLE_PAYOUTS[triple]
+        if triple == _SYM_COIN:
+            eff = base.gold if base.gold > 0 else _FALLBACK_BASE
+            prizes.reward = Reward(gold=round(eff * r.uniform(lo, hi), 2))
+        else:
+            eff = base.diamond if base.diamond > 0 else _FALLBACK_BASE
+            prizes.reward = Reward(diamond=round(eff * r.uniform(lo, hi), 2))
+        return prizes
+    if triple == _SYM_LETTER:
+        prizes.letters = [draw_letter_prize(r) for _ in range(_TRIPLE_LETTER_COUNT)]
+        return prizes
+    if triple == _SYM_NOTE:
+        names = song_names()
+        if names:
+            for _ in range(_TRIPLE_NOTE_COUNT):
+                name = names[r.randrange(len(names))]
+                prizes.song_tokens[name] = prizes.song_tokens.get(name, 0) + 1
+        return prizes
+    # 樱桃式：最左轴是「字」就小赔一枚字母
+    if s0 == _SYM_LETTER:
+        prizes.letters = [draw_letter_prize(r) for _ in range(_LEFT_LETTER_FLOOR)]
+    return prizes
 
 
 def preferred_miss_stop(
@@ -138,31 +234,6 @@ def preferred_miss_stop(
         if strip[idx] == _SYM_MISS and strip[(idx + 1) % n] == hot:
             return step
     return None
-
-
-def compute_bonus(
-    s0: int,
-    s1: int,
-    s2: int,
-    base_reward: Optional[Reward] = None,
-    rng: Optional[random.Random] = None,
-) -> Reward:
-    """三同/两同 → 倍率表作用在 base 对应币种上；无匹配返回空 Reward。
-
-    eff = base 该币种（为 0 时兜底 _FALLBACK_BASE），bonus = round(eff × 倍率, 2)。
-    只产出与匹配符号同币种的奖励。
-    """
-    r = rng if rng is not None else random.Random()
-    base = base_reward if base_reward is not None else Reward()
-    kind, sym = _match_of(s0, s1, s2)
-    if kind == "none":
-        return Reward()
-    lo, hi = _PAYOUTS[(kind, sym)]
-    if sym == _SYM_COIN:
-        eff = base.gold if base.gold > 0 else _FALLBACK_BASE
-        return Reward(gold=round(eff * r.uniform(lo, hi), 2))
-    eff = base.diamond if base.diamond > 0 else _FALLBACK_BASE
-    return Reward(diamond=round(eff * r.uniform(lo, hi), 2))
 
 
 def _get_sfx():
@@ -342,7 +413,7 @@ class _ReelWidget(QWidget):
 class SlotMachineDialog(QDialog):
     """老虎机弹窗（模态）。构造后自动开转，关闭时恰好结算一次奖励。"""
 
-    reward_decided = Signal(object)  # 载荷 Reward；恰好 emit 一次（可为空）
+    prize_decided = Signal(object)  # 载荷 SlotPrizes；恰好 emit 一次（可为空）
 
     def __init__(
         self,
@@ -353,15 +424,15 @@ class SlotMachineDialog(QDialog):
         result: Optional[Tuple[int, int, int]] = None,
         rng: Optional[random.Random] = None,
     ) -> None:
-        """base_reward 为基础奖励（仅展示与倍率基准）；老虎机产出额外 bonus。
+        """base_reward 为基础奖励（金/钻倍率的基准）；老虎机产出额外奖励。
 
-        result/rng 仅供测试注入固定结果与固定倍率。
+        result/rng 仅供测试注入固定结果与固定随机数。
         """
         super().__init__(parent)
         self._base = base_reward if base_reward is not None else Reward()
         self._task_title = task_title
         self._result = result if result is not None else spin_result(rng)
-        self._bonus = compute_bonus(*self._result, self._base, rng=rng)
+        self._prizes = compute_prizes(*self._result, self._base, rng=rng)
         self._finalized = False
         self._result_shown = False
         self._near_miss_active = False
@@ -490,31 +561,28 @@ class SlotMachineDialog(QDialog):
     def _on_all_stopped(self) -> None:
         if self._finalized or self._result_shown:
             return
-        kind, sym = _match_of(*self._result)
+        triple = _match_of(*self._result)
+        prizes = self._prizes
         sfx = _get_sfx()
-        if kind == "none":
+        if triple is not None:
+            for i in range(3):
+                if self._result[i] == triple:
+                    self._reels[i].set_flash(_SYM_COLOR[triple])
+        if not prizes.is_empty():
+            text = self._prize_text(triple, prizes)
+            color = _SYM_COLOR[triple] if triple is not None else _SYM_COLOR[_SYM_LETTER]
+            if sfx is not None:
+                sfx.play_slot_win()
+        else:
             text = "没有匹配，本次没有额外奖励"
             color = TEXT_MUTED
-            near_miss = self._result.count(_SYM_MISS) < 3
-            if near_miss:
-                # 差一格（如 金××）：换掉一个 ✕ 就是两同。
-                # 静置一拍再揭晓（悬念节拍），音画同步。
+            if self._has_near_miss():
+                # 差一格：静置一拍再揭晓（悬念节拍），音画同步
                 self._near_miss_active = True
                 self._reveal_timer = QTimer(self)
                 self._reveal_timer.setSingleShot(True)
                 self._reveal_timer.timeout.connect(self._reveal_near_miss)
                 self._reveal_timer.start(_NEAR_MISS_DELAY_MS)
-        else:
-            for i in range(3):
-                if self._result[i] == sym:
-                    self._reels[i].set_flash(_SYM_COLOR[sym])
-            amount = self._bonus.gold if sym == _SYM_COIN else self._bonus.diamond
-            currency = "金币" if sym == _SYM_COIN else "钻石"
-            match_name = "三同" if kind == "triple" else "两同"
-            text = f"{match_name}{_SYM_CHAR[sym]}！额外 +{format_amount(amount)} {currency}"
-            color = _SYM_COLOR[sym]
-            if sfx is not None:
-                sfx.play_slot_win()
         self._result_label.setText(text)
         self._result_label.setStyleSheet(
             f"color: {color}; font-size: 14px; font-weight: 600;"
@@ -523,13 +591,45 @@ class SlotMachineDialog(QDialog):
         self._close_btn.setFocus()
         self._result_shown = True
 
+    def _has_near_miss(self) -> bool:
+        """无奖但差一格：有 ✕ 且非全 ✕（换掉 ✕ 就能凑出奖）。"""
+        return 0 < self._result.count(_SYM_MISS) < 3
+
+    def _prize_text(self, triple: Optional[int], prizes: SlotPrizes) -> str:
+        """多行结果文案：线奖 / 字母 / 试听券。"""
+        lines: List[str] = []
+        if triple in (_SYM_COIN, _SYM_DIAMOND) and not prizes.reward.is_empty():
+            amount = (
+                prizes.reward.gold if triple == _SYM_COIN else prizes.reward.diamond
+            )
+            currency = "金币" if triple == _SYM_COIN else "钻石"
+            lines.append(f"三同{_SYM_CHAR[triple]}！额外 +{format_amount(amount)} {currency}")
+        elif triple == _SYM_LETTER:
+            lines.append(f"三同字！开出 {len(prizes.letters)} 枚字母")
+        elif triple == _SYM_NOTE:
+            total = sum(prizes.song_tokens.values())
+            lines.append(f"三同♪！获得 {total} 张试听券")
+        # 字母列表（含樱桃赔付）
+        if prizes.letters:
+            parts = [
+                f"{letter}（{_LETTER_RARITY_NAMES[r]}）" for letter, r in prizes.letters
+            ]
+            prefix = "字母 " if triple != _SYM_LETTER else ""
+            lines.append(prefix + "、".join(parts))
+        # 试听券列表
+        if prizes.song_tokens:
+            parts = [f"{name}×{n}" for name, n in prizes.song_tokens.items()]
+            lines.append("试听券：" + "、".join(parts))
+        return "\n".join(lines)
+
     def _reveal_near_miss(self) -> None:
-        """近失揭晓：两格 ✕ 弹一下 + "差一点！"标签闪烁 + 音效。"""
+        """近失揭晓：未凑成的那格 ✕（及其余非奖格）弹一下 + "差一点！"标签闪烁 + 音效。"""
         if self._finalized or not self._near_miss_active:
             return
         sfx = _get_sfx()
         if sfx is not None:
             sfx.play_slot_near_miss()
+        # 未中奖时，弹出"最碍事的那些格"：优先弹 ✕，其次弹散格
         for i, s in enumerate(self._result):
             if s == _SYM_MISS:
                 self._reels[i].nudge(times=2)
@@ -568,7 +668,7 @@ class SlotMachineDialog(QDialog):
         if sfx is not None:
             sfx.stop_slot_spin()
         self._stop_all_timers()
-        self.reward_decided.emit(self._bonus)
+        self.prize_decided.emit(self._prizes)
 
     def _stop_all_timers(self) -> None:
         for timer in self._stop_timers:
@@ -581,8 +681,8 @@ class SlotMachineDialog(QDialog):
             reel.stop_timer()
             reel.stop_nudge()
 
-    def bonus_reward(self) -> Reward:
-        return self._bonus
+    def prizes(self) -> SlotPrizes:
+        return self._prizes
 
     # ---- 关闭路径全部先结算 ----
 

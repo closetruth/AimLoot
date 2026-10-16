@@ -6,13 +6,13 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 from .models import Reward
 from .task_manager import TaskManager
 from .ui_confirm import ask_yes_no
-from .ui_slot_machine import SlotMachineDialog
+from .ui_slot_machine import SlotMachineDialog, SlotPrizes
 
 
-def _apply_slot_bonus(manager: TaskManager, bonus: Reward) -> None:
-    """老虎机额外奖励入账（空奖励跳过）。"""
-    if not bonus.is_empty():
-        manager.state.inventory.add(bonus)
+def _apply_slot_prizes(manager: TaskManager, prizes: SlotPrizes) -> None:
+    """老虎机产出（钱/字母/试听券）入账。"""
+    if isinstance(prizes, SlotPrizes):
+        prizes.apply(manager.state.inventory)
 
 
 def try_complete_goal(parent: QWidget, manager: TaskManager, task_id: str) -> bool:
@@ -55,7 +55,7 @@ def try_complete_goal(parent: QWidget, manager: TaskManager, task_id: str) -> bo
     reward = manager.complete(task_id)
     base = reward if reward is not None else Reward()
     dialog = SlotMachineDialog(base, task_title=f"目标完成 · {task.title}", parent=parent)
-    dialog.reward_decided.connect(lambda bonus: _apply_slot_bonus(manager, bonus))
+    dialog.prize_decided.connect(lambda prizes: _apply_slot_prizes(manager, prizes))
     dialog.exec()
     dialog.deleteLater()
     return True

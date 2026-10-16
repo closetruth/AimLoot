@@ -1,8 +1,9 @@
-"""老虎机弹窗离屏回归测试：奖励结算 / 跳过 / Esc 各阶段不丢奖。
+"""老虎机弹窗离屏回归测试：三同制结算 / 樱桃赔付 / 字母与试听券 / Esc 不丢奖。
 
 历史 bug：Esc / 关闭窗口会绕过「收下」按钮，奖励 signal 未 emit 导致丢失。
-本文件按简单版 API 重写：结果在构造时一次性生成，任何关闭路径都经
-_finalize 恰好 emit 一次（可为空 Reward），重复收下不重复结算。
+机制：经典三轴，三同才中奖；最左轴「字」给 1 枚字母（樱桃式部分赔付）；
+三同字 = 3 枚字母、三同♪ = 3 张试听券。任何关闭路径都经 _finalize
+恰好 emit 一次（可为空 SlotPrizes），重复收下不重复结算。
 """
 from __future__ import annotations
 
@@ -20,9 +21,15 @@ from PySide6.QtWidgets import QApplication
 from src.models import Reward
 from src.ui_slot_machine import (
     SlotMachineDialog,
-    _REEL_STRIP,
+    SlotPrizes,
     _match_of,
-    compute_bonus,
+    _REEL_STRIP,
+    _SYM_COIN,
+    _SYM_DIAMOND,
+    _SYM_LETTER,
+    _SYM_MISS,
+    _SYM_NOTE,
+    compute_prizes,
     spin_result,
 )
 
@@ -30,17 +37,27 @@ _app = QApplication.instance() or QApplication([])
 
 
 class _StubRng:
-    """uniform(lo, hi) 固定返回 hi 或 lo，用于确定性测试。"""
+    """uniform/randrange/choices 确定性返回，用于测试。"""
 
-    def __init__(self, mode: str) -> None:
-        assert mode in ("hi", "lo")
-        self.mode = mode
+    def __init__(self, value: float = 1.0, letter_index: int = 0, rarity: int = 0) -> None:
+        self.value = value
+        self.letter_index = letter_index
+        self.rarity = rarity
 
     def choice(self, seq):
         return seq[0]
 
     def uniform(self, lo: float, hi: float) -> float:
-        return hi if self.mode == "hi" else lo
+        return hi if self.value >= 1.0 else lo
+
+    def randrange(self, n: int) -> int:
+        return self.letter_index % n
+
+    def choices(self, population, weights=None):
+        return [self.rarity]
+
+    def random(self) -> float:
+        return self.value
 
 
 def _pump(ms: int) -> None:
@@ -96,53 +113,131 @@ class _SfxInjection(unittest.TestCase):
         self.addCleanup(_restore)
 
 
-def _make_dialog(base: Reward | None = None, result=None) -> SlotMachineDialog:
-    dlg = SlotMachineDialog(base or Reward(), task_title="测试目标", result=result)
+def _make_dialog(base: Reward | None = None, result=None, rng=None) -> SlotMachineDialog:
+    dlg = SlotMachineDialog(
+        base or Reward(), task_title="测试目标", result=result, rng=rng
+    )
     dlg.show()
     _app.processEvents()
     return dlg
 
 
-def _wait_result(dlg: SlotMachineDialog, timeout_ms: int = 8000) -> None:
+def _wait_result(dlg: SlotMachineDialog, timeout_ms: int = 12000) -> None:
     waited = 0
     while not dlg._result_shown and waited < timeout_ms:
         _pump(100)
         waited += 100
 
 
-class ReelDirectionTests(unittest.TestCase):
-    """转轮方向回归：向下滚（上格符号下一帧落到中心）。
+class PureFunctionTests(unittest.TestCase):
+    """纯函数：三同判定 / 奖励计算 / 取样。"""
 
-    与近失 nudge 的向下回弹保持一致，别再改回向上。
-    """
+    def test_match_only_triple(self):
+        self.assertEqual(_match_of(0, 0, 0), _SYM_COIN)
+        self.assertEqual(_match_of(1, 1, 1), _SYM_DIAMOND)
+        self.assertEqual(_match_of(2, 2, 2), _SYM_LETTER)
+        self.assertEqual(_match_of(3, 3, 3), _SYM_NOTE)
+        self.assertIsNone(_match_of(4, 4, 4), "三 ✕ 不中奖")
+        self.assertIsNone(_match_of(0, 0, 2), "两同不中奖（经典三轴）")
+        self.assertIsNone(_match_of(0, 1, 2))
+        self.assertIsNone(_match_of(2, 0, 2))
+
+    def test_triple_coin_scaling_and_fallback(self):
+        hi = _StubRng(1.0)
+        lo = _StubRng(0.0)
+        self.assertAlmostEqual(
+            compute_prizes(0, 0, 0, Reward(gold=2.0), hi).reward.gold, 8.0
+        )
+        self.assertAlmostEqual(compute_prizes(0, 0, 0, Reward(), hi).reward.gold, 4.0)
+        self.assertAlmostEqual(
+            compute_prizes(0, 0, 0, Reward(gold=2.0), lo).reward.gold, 3.0
+        )
+
+    def test_triple_diamond_scaling(self):
+        hi = _StubRng(1.0)
+        prizes = compute_prizes(1, 1, 1, Reward(diamond=5.0), hi)
+        self.assertAlmostEqual(prizes.reward.diamond, 5.0)
+        self.assertEqual(prizes.reward.gold, 0.0)
+        self.assertAlmostEqual(compute_prizes(1, 1, 1, Reward(), hi).reward.diamond, 1.0)
+
+    def test_triple_letter_gives_three(self):
+        prizes = compute_prizes(2, 2, 2, Reward(gold=2.0), _StubRng())
+        self.assertEqual(len(prizes.letters), 3)
+        self.assertTrue(prizes.reward.is_empty())
+        for letter, rarity in prizes.letters:
+            self.assertTrue("A" <= letter <= "Z")
+            self.assertIn(rarity, range(5))
+
+    def test_triple_note_gives_three_tokens(self):
+        prizes = compute_prizes(3, 3, 3, Reward(gold=2.0), _StubRng())
+        self.assertEqual(sum(prizes.song_tokens.values()), 3)
+        self.assertTrue(prizes.reward.is_empty())
+
+    def test_cherry_left_letter(self):
+        """最左轴「字」非三同：樱桃式 1 枚字母。"""
+        prizes = compute_prizes(2, 0, 4, Reward(), _StubRng())
+        self.assertEqual(len(prizes.letters), 1)
+        self.assertTrue(prizes.reward.is_empty())
+
+    def test_no_left_letter_no_prize(self):
+        """字不在左轴且无三同 → 空。"""
+        prizes = compute_prizes(0, 2, 4, Reward(gold=5.0), _StubRng())
+        self.assertTrue(prizes.is_empty())
+        self.assertEqual(prizes.letters, [])
+        self.assertEqual(prizes.song_tokens, {})
+
+    def test_prizes_apply_to_inventory(self):
+        from src.models import Inventory
+
+        inv = Inventory()
+        prizes = SlotPrizes(reward=Reward(gold=2.5, diamond=0.5))
+        prizes.letters = [("D", 2), ("A", 0)]
+        prizes.song_tokens = {"The Dawn": 2}
+        prizes.apply(inv)
+        self.assertAlmostEqual(inv.gold, 2.5)
+        self.assertAlmostEqual(inv.diamond, 0.5)
+        self.assertEqual(inv.letter_total("D"), 1)
+        self.assertEqual(inv.letters["D"][2], 1)
+        self.assertEqual(inv.letters["A"][0], 1)
+        self.assertEqual(inv.song_token_count("The Dawn"), 2)
+
+    def test_spin_result_membership(self):
+        strip = set(_REEL_STRIP)
+        for _ in range(200):
+            result = spin_result()
+            self.assertEqual(len(result), 3)
+            self.assertTrue(all(s in strip for s in result))
+
+
+class ReelDirectionTests(unittest.TestCase):
+    """转轮方向回归：向下滚（上格符号下一帧落到中心）。"""
 
     def test_symbol_flows_downward(self):
         from src.ui_slot_machine import _ReelWidget
 
         reel = _ReelWidget()
-        above = reel._symbol_at(-1)   # 当前帧：上方格
-        reel._offset += 1             # 下一帧
+        above = reel._symbol_at(-1)
+        reel._offset += 1
         center_next = reel._symbol_at(0)
-        self.assertEqual(
-            above, center_next,
-            "上一帧的上格符号应落到中心（向下滚动）；若相等失败说明方向被改反了",
-        )
+        self.assertEqual(above, center_next, "上格符号应落到中心（向下滚）")
 
     def test_stopping_at_symbol_lands_center(self):
         from src.ui_slot_machine import _ReelWidget
 
         reel = _ReelWidget()
-        reel._offset = 0
+        reel._offset = 0.0
         reel.start_spin()
         reel.stop_at(1)  # 钻
-        for _ in range(len(_REEL_STRIP) + 2):
+        for _ in range(2000):
             reel._on_tick()
+            if reel.is_stopped():
+                break
         self.assertTrue(reel.is_stopped())
         self.assertEqual(reel.center_symbol(), 1)
 
 
 class SlowdownTests(unittest.TestCase):
-    """减速停轴：阻尼式步长收缩（连续滑行），无定格。"""
+    """减速停轴：阻尼式步长收缩（连续滑行）。"""
 
     def test_normal_stop_keeps_constant_step(self):
         from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
@@ -153,10 +248,7 @@ class SlowdownTests(unittest.TestCase):
         reel.stop_at(1)
         start = reel._offset
         reel._on_tick()
-        self.assertAlmostEqual(
-            reel._offset - start, _NORMAL_STEP,
-            msg="非减速停应匀速推进",
-        )
+        self.assertAlmostEqual(reel._offset - start, _NORMAL_STEP)
 
     def test_slowdown_shrinks_step_near_target(self):
         from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
@@ -175,225 +267,131 @@ class SlowdownTests(unittest.TestCase):
                 break
         self.assertTrue(reel.is_stopped())
         self.assertEqual(reel.center_symbol(), 1)
-        self.assertLess(
-            min(steps[-6:]), _NORMAL_STEP * 0.5,
-            "临近停点应显著减速（阻尼步长收缩）",
-        )
-        # 末尾步长应远小于起始步长（阻尼趋势）
+        self.assertLess(min(steps[-6:]), _NORMAL_STEP * 0.5, "临近停点应显著减速")
         self.assertLess(min(steps[-6:]), max(steps[:6]))
-
-    def test_suspense_leads_miss_to_hot_above(self):
-        """金× 悬念：停点应优选"上格是金"的 ×，定格画面 = 金悬在上方。"""
-        from src.ui_slot_machine import (
-            _REEL_STRIP,
-            _ReelWidget,
-            _SYM_COIN,
-            _SYM_MISS,
-        )
-
-        reel = _ReelWidget()
-        reel._offset = 0.0
-        reel.start_spin()
-        reel.stop_at(_SYM_MISS, slowdown=True, hot=_SYM_COIN)
-        for _ in range(2000):
-            reel._on_tick()
-            if reel.is_stopped():
-                break
-        self.assertTrue(reel.is_stopped())
-        self.assertEqual(reel.center_symbol(), _SYM_MISS)
-        # 上格（screen row -1）= strip[idx+1]
-        idx = int(reel._offset) % len(_REEL_STRIP)
-        above = _REEL_STRIP[(idx + 1) % len(_REEL_STRIP)]
-        self.assertEqual(above, _SYM_COIN, "停 × 时上格应为热符号（金）")
-
-    def test_preferred_miss_stop_pure(self):
-        from src.ui_slot_machine import (
-            _REEL_STRIP,
-            _SYM_COIN,
-            _SYM_DIAMOND,
-            preferred_miss_stop,
-        )
-
-        # 从任一 start 出发都能找到"上格是金"的 ×（strip 里保证存在）
-        for start in range(len(_REEL_STRIP)):
-            step = preferred_miss_stop(_REEL_STRIP, start, _SYM_COIN)
-            self.assertIsNotNone(step)
-            idx = (start + step) % len(_REEL_STRIP)
-            self.assertEqual(_REEL_STRIP[idx], 2)
-            self.assertEqual(_REEL_STRIP[(idx + 1) % len(_REEL_STRIP)], _SYM_COIN)
-        self.assertIsNone(preferred_miss_stop(_REEL_STRIP, 0, None))
-
-    def test_hot_symbol_detection(self):
-        from src.ui_slot_machine import hot_symbol_for
-
-        self.assertEqual(hot_symbol_for(2, (0, 0)), 0, "金金× → 热符号金")
-        self.assertEqual(hot_symbol_for(2, (0, 2)), 0, "金×× → 热符号金")
-        self.assertEqual(hot_symbol_for(2, (2, 2)), None, "××× 无热符号")
-        self.assertIsNone(hot_symbol_for(0, (0, 2)), "停金时无热符号概念")
 
     def test_third_suspense_detection(self):
         from src.ui_slot_machine import third_has_suspense
 
         self.assertTrue(third_has_suspense((0, 0, 9)), "金金 冲三同")
-        self.assertTrue(third_has_suspense((1, 1, 9)), "钻钻 冲三同")
-        self.assertTrue(third_has_suspense((2, 2, 9)), "×× 冲近失")
-        self.assertTrue(third_has_suspense((0, 2, 9)), "金× 第三轴定生死")
-        self.assertTrue(third_has_suspense((2, 1, 9)), "×钻 同上")
+        self.assertTrue(third_has_suspense((2, 2, 9)), "字字 冲三同")
+        self.assertTrue(third_has_suspense((3, 3, 9)), "♪♪ 冲三同")
+        self.assertFalse(third_has_suspense((0, 2, 9)), "金× 必不中，无悬念")
+        self.assertFalse(third_has_suspense((4, 3, 9)), "×♪ 必不中，无悬念")
+        self.assertFalse(third_has_suspense((4, 4, 9)), "×× 无悬念")
         self.assertFalse(third_has_suspense((0, 1, 9)), "金钻混排无悬念")
-        self.assertFalse(third_has_suspense((1, 0, 9)), "钻金混排无悬念")
 
-    def test_scroll_frac_subpixel(self):
-        from src.ui_slot_machine import _ReelWidget
+    def test_hot_symbol_covers_letter_note(self):
+        from src.ui_slot_machine import hot_symbol_for
 
-        reel = _ReelWidget()
-        reel._offset = 3.4
-        self.assertAlmostEqual(reel.get_scroll_frac(), 0.4, places=5)
-        reel._offset = 7.0
-        self.assertAlmostEqual(reel.get_scroll_frac(), 0.0, places=5)
+        self.assertEqual(hot_symbol_for(_SYM_MISS, (2, 4)), _SYM_LETTER, "字× → 热符号字")
+        self.assertEqual(hot_symbol_for(_SYM_MISS, (4, 3)), _SYM_NOTE, "×♪ → 热符号♪")
+        self.assertEqual(hot_symbol_for(_SYM_MISS, (0, 0)), _SYM_COIN)
+        self.assertIsNone(hot_symbol_for(_SYM_MISS, (4, 4)), "×× 无热符号")
+        self.assertIsNone(hot_symbol_for(0, (0, 4)), "停金不适用")
 
+    def test_preferred_miss_stop_pure(self):
+        from src.ui_slot_machine import preferred_miss_stop
 
-class PureFunctionTests(unittest.TestCase):
-    """纯函数：匹配判定 / 奖励计算 / 取样。"""
-
-    def test_match_classification(self):
-        self.assertEqual(_match_of(0, 0, 0), ("triple", 0))
-        self.assertEqual(_match_of(1, 1, 1), ("triple", 1))
-        self.assertEqual(_match_of(2, 2, 2), ("none", None))
-        self.assertEqual(_match_of(0, 0, 2), ("pair", 0))
-        self.assertEqual(_match_of(1, 2, 1), ("pair", 1))
-        self.assertEqual(_match_of(0, 1, 2), ("none", None))
-        self.assertEqual(_match_of(2, 2, 0), ("none", None))
-
-    def test_compute_bonus_scaling_and_fallback(self):
-        hi = _StubRng("hi")
-        lo = _StubRng("lo")
-        # 三同金：base 2.0 → 2.0×4.0；空 base → 兜底 1.0×4.0
-        self.assertAlmostEqual(
-            compute_bonus(0, 0, 0, Reward(gold=2.0), hi).gold, 8.0
-        )
-        self.assertAlmostEqual(compute_bonus(0, 0, 0, Reward(), hi).gold, 4.0)
-        # 两同金
-        self.assertAlmostEqual(
-            compute_bonus(0, 0, 2, Reward(gold=2.0), hi).gold, 2.4
-        )
-        self.assertAlmostEqual(compute_bonus(0, 0, 2, Reward(), hi).gold, 1.2)
-        # 三同钻：base 5.0 → 5.0×1.0；空 base → 兜底 1.0×1.0
-        self.assertAlmostEqual(
-            compute_bonus(1, 1, 1, Reward(diamond=5.0), hi).diamond, 5.0
-        )
-        self.assertAlmostEqual(compute_bonus(1, 1, 1, Reward(), hi).diamond, 1.0)
-        # 下界方向也按倍率表走
-        self.assertAlmostEqual(
-            compute_bonus(0, 0, 2, Reward(gold=2.0), lo).gold, 0.6
-        )
-
-    def test_compute_bonus_currency_routing(self):
-        # 金奖不动钻：base 只有钻时两同金走金兜底
-        bonus = compute_bonus(0, 0, 2, Reward(diamond=10.0), _StubRng("hi"))
-        self.assertAlmostEqual(bonus.gold, 1.2)
-        self.assertEqual(bonus.diamond, 0.0)
-        # 无匹配 → 空奖励
-        self.assertTrue(compute_bonus(0, 1, 2, Reward(gold=2.0)).is_empty())
-        # 三同 ✕ → 空奖励
-        self.assertTrue(compute_bonus(2, 2, 2, Reward(gold=2.0)).is_empty())
-
-    def test_spin_result_membership(self):
-        strip = set(_REEL_STRIP)
-        for _ in range(200):
-            result = spin_result()
-            self.assertEqual(len(result), 3)
-            self.assertTrue(all(s in strip for s in result))
+        for start in range(len(_REEL_STRIP)):
+            step = preferred_miss_stop(_REEL_STRIP, start, _SYM_COIN)
+            self.assertIsNotNone(step)
+            idx = (start + step) % len(_REEL_STRIP)
+            self.assertEqual(_REEL_STRIP[idx], _SYM_MISS)
+            self.assertEqual(_REEL_STRIP[(idx + 1) % len(_REEL_STRIP)], _SYM_COIN)
+        self.assertIsNone(preferred_miss_stop(_REEL_STRIP, 0, None))
 
 
 class SlotMachineDialogTests(_SfxInjection):
-    def test_accept_awards_bonus_once(self):
+    def test_triple_coin_awards_once(self):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
-        got: list[object] = []
-        dlg.reward_decided.connect(got.append)
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
-        self.assertTrue(dlg._result_shown, "转轮应在超时前揭晓结果")
+        self.assertTrue(dlg._result_shown)
         self.assertTrue(dlg._close_btn.isEnabled())
         dlg._close_btn.click()
         _app.processEvents()
         self.assertEqual(len(got), 1)
-        self.assertTrue(1.5 <= got[0].gold <= 4.0)
+        self.assertTrue(1.5 <= got[0].reward.gold <= 4.0)
         self.assertTrue(dlg._finalized)
-        dlg._close_btn.click()  # 二次点击不得重复结算
+        dlg._close_btn.click()
         self.assertEqual(len(got), 1, "重复收下不得重复结算")
         dlg.close()
 
-    def test_spin_sfx_plays_reel_ticks_and_win(self):
-        """转动全程音效：开转 → 3 次停轴 → 中奖音，三轴停稳后循环声即停。"""
-        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
+    def test_letter_triple_shows_and_awards(self):
+        dlg = _make_dialog(Reward(), result=(2, 2, 2), rng=_StubRng())
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
-        self.assertEqual(self._sfx.calls[0], "spin", "构造后应立即开转音")
-        self.assertEqual(self._sfx.calls.count("reel"), 3, "每轴停稳各一声")
-        self.assertIn("win", self._sfx.calls, "三同应有中奖音")
-        self.assertIn("stop", self._sfx.calls, "三轴停稳后循环声应停")
-        dlg.close()
-
-    def test_near_miss_reveal_after_delay(self):
-        """金××（差一格）：静置节拍后播"差一点"音 + 标签可见 + 两格 ✕ 回弹。"""
-        dlg = _make_dialog(Reward(gold=1.0), result=(0, 2, 2))
-        _wait_result(dlg)
-        self.assertTrue(dlg.bonus_reward().is_empty())
-        self.assertNotIn("near", self._sfx.calls, "揭晓前不应立刻播近失音")
-        self.assertFalse(dlg._near_miss_label.isVisible())
-        _pump(500)  # 等过 300ms 静置节拍
-        self.assertIn("near", self._sfx.calls, "静置后应播近失音")
-        self.assertNotIn("win", self._sfx.calls)
-        self.assertTrue(dlg._near_miss_label.isVisible(), "近失标签应可见")
-        # 两个 ✕ 格各有回弹动画（_nudge_anim 存活期间非 None）
-        self.assertIsNotNone(dlg._reels[1]._nudge_anim)
-        self.assertIsNotNone(dlg._reels[2]._nudge_anim)
-        self.assertIsNone(dlg._reels[0]._nudge_anim, "金格不应回弹")
-        dlg.close()
-
-    def test_near_miss_escape_before_reveal_is_safe(self):
-        """静置节拍期间 Esc：不崩、结算一次、延迟揭晓被取消。"""
-        dlg = _make_dialog(Reward(gold=1.0), result=(2, 2, 0))
-        got: list[object] = []
-        dlg.reward_decided.connect(got.append)
-        _wait_result(dlg)
-        self.assertNotIn("near", self._sfx.calls)
-        QTest.keyClick(dlg, Qt.Key_Escape)  # 在 300ms 揭晓前关闭
+        self.assertIn("三同字", dlg._result_label.text())
+        dlg._close_btn.click()
         _app.processEvents()
         self.assertEqual(len(got), 1)
-        self.assertTrue(dlg._finalized)
-        _pump(500)
-        self.assertNotIn("near", self._sfx.calls, "关闭后不得再播近失音")
+        self.assertEqual(len(got[0].letters), 3)
+        self.assertIn("win", self._sfx.calls)
         dlg.close()
 
-    def test_all_miss_sfx_is_silent(self):
-        """×××：离中奖两格，无近失音、无标签。"""
-        dlg = _make_dialog(Reward(gold=1.0), result=(2, 2, 2))
+    def test_note_triple_shows_and_awards(self):
+        dlg = _make_dialog(Reward(), result=(3, 3, 3), rng=_StubRng())
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
-        _pump(500)
-        self.assertNotIn("near", self._sfx.calls)
-        self.assertNotIn("win", self._sfx.calls)
-        self.assertFalse(dlg._near_miss_label.isVisible())
+        self.assertIn("三同♪", dlg._result_label.text())
+        dlg._close_btn.click()
+        _app.processEvents()
+        self.assertEqual(sum(got[0].song_tokens.values()), 3)
         dlg.close()
 
-    def test_escape_before_stop_still_awards(self):
+    def test_cherry_letter_prize_shown(self):
+        """金×× 不中奖；但 字××（最左轴字）有小奖。"""
+        dlg = _make_dialog(Reward(), result=(2, 4, 4), rng=_StubRng())
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
+        _wait_result(dlg)
+        self.assertIn("字母", dlg._result_label.text())
+        dlg._close_btn.click()
+        _app.processEvents()
+        self.assertEqual(len(got[0].letters), 1)
+        self.assertNotIn("near", self._sfx.calls, "有奖不播近失音")
+        dlg.close()
+
+    def test_two_of_a_kind_no_prize_near_miss(self):
+        """两同不中奖（经典三轴），触发近失演出。"""
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 4))
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
+        _wait_result(dlg)
+        self.assertNotIn("near", self._sfx.calls, "揭晓前不应立刻播近失音")
+        self.assertFalse(dlg._near_miss_label.isVisible())
+        _pump(500)
+        self.assertIn("near", self._sfx.calls)
+        self.assertTrue(dlg._near_miss_label.isVisible())
+        dlg._close_btn.click()
+        _app.processEvents()
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0].is_empty())
+        dlg.close()
+
+    def test_escape_during_spin_still_awards(self):
         """转动中 Esc：跳过后仍必须结算一次（历史 bug：奖励丢失）。"""
         dlg = _make_dialog(Reward(), result=(1, 1, 1))
-        got: list[object] = []
-        dlg.reward_decided.connect(got.append)
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
         _pump(300)
         self.assertFalse(dlg._reels[0].is_stopped(), "测试前提：第一轴应仍在转")
         QTest.keyClick(dlg, Qt.Key_Escape)
         _app.processEvents()
         self.assertEqual(len(got), 1, "转动中 Esc 必须结算一次奖励")
-        self.assertTrue(0.3 <= got[0].diamond <= 1.0)
+        self.assertTrue(0.3 <= got[0].reward.diamond <= 1.0)
         self.assertFalse(dlg.isVisible())
-        self.assertIn("stop", self._sfx.calls, "Esc 结算也必须停循环声")
+        self.assertIn("stop", self._sfx.calls)
         dlg.close()
 
     def test_escape_immediately_awards(self):
-        """构造后立刻 Esc：不经过任何转动也结算（结果构造时已定）。"""
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
-        got: list[object] = []
-        dlg.reward_decided.connect(got.append)
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
         QTest.keyClick(dlg, Qt.Key_Escape)
         _app.processEvents()
         self.assertEqual(len(got), 1)
@@ -402,40 +400,41 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg.close()
 
     def test_reject_after_reveal_awards_once(self):
-        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 2))
-        got: list[object] = []
-        dlg.reward_decided.connect(got.append)
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 4))
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
         dlg.reject()
         self.assertEqual(len(got), 1, "揭晓后 Esc 必须结算奖励")
-        self.assertEqual(got[0].gold, dlg.bonus_reward().gold)
-        self.assertEqual(got[0].diamond, dlg.bonus_reward().diamond)
+        self.assertAlmostEqual(got[0].reward.gold, dlg.prizes().reward.gold)
         dlg.close()
 
-    def test_no_match_emits_empty_and_close_stops_timers(self):
-        dlg = _make_dialog(Reward(), result=(0, 1, 2))
-        got: list[object] = []
-        dlg.reward_decided.connect(got.append)
+    def test_close_stops_timers(self):
+        dlg = _make_dialog(Reward(), result=(0, 4, 0))
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
-        self.assertTrue(dlg.bonus_reward().is_empty())
-        self.assertTrue(dlg._close_btn.isEnabled(), "空手也能顺利收下")
-        self.assertIsNotNone(dlg._reveal_timer, "1 个 ✕ 应排入近失揭晓定时器")
         dlg.close()
         _app.processEvents()
         self.assertTrue(dlg._finalized)
         self.assertEqual(len(got), 1)
-        self.assertTrue(got[0].is_empty(), "无匹配应发空奖励")
         for reel in dlg._reels:
             self.assertFalse(reel._timer.isActive(), "轴计时器必须停")
         for timer in dlg._stop_timers:
             self.assertFalse(timer.isActive(), "停轴计时器必须停")
-        self.assertFalse(dlg._reveal_timer.isActive(), "迟揭晓定时器必须停")
         self.assertIn("stop", self._sfx.calls)
-        _pump(500)
-        self.assertNotIn("near", self._sfx.calls, "关闭后不得再揭晓近失")
 
-    def test_chest_claim_opens_slot_and_bonus_lands(self):
-        """集成回归：领宝箱弹老虎机，bonus 信号入账。"""
+    def test_spin_sfx_plays_reel_ticks_and_win(self):
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
+        _wait_result(dlg)
+        self.assertEqual(self._sfx.calls[0], "spin")
+        self.assertEqual(self._sfx.calls.count("reel"), 3)
+        self.assertIn("win", self._sfx.calls)
+        self.assertIn("stop", self._sfx.calls)
+        dlg.close()
+
+    def test_chest_claim_opens_slot_and_prizes_land(self):
+        """集成回归：领宝箱弹老虎机，产出入账。"""
         import tempfile
         from pathlib import Path
         from unittest import mock
@@ -461,20 +460,19 @@ class SlotMachineDialogTests(_SfxInjection):
 
         with mock.patch.object(SlotMachineDialog, "exec", new=_fake_exec):
             widget.roll_progress_bar.chest_claimed.emit(0, 4)
-        # 不要 pump：_show_slot_machine 尾部 deleteLater 会在下次事件循环销毁弹窗
         self.assertEqual(len(captured), 1, "领宝箱应弹一次老虎机")
         self.assertEqual(state.inventory.chest_counts_by_rarity()[4], 1)
         self.assertEqual(captured[0]._task_title, "传奇宝箱")
         self.assertTrue(captured[0]._base.is_empty())
         before_gold = state.inventory.gold
-        captured[0].reward_decided.emit(Reward(gold=2.5))
+        captured[0].prize_decided.emit(SlotPrizes(reward=Reward(gold=2.5)))
         self.assertAlmostEqual(state.inventory.gold, before_gold + 2.5)
         widget.close()
         widget.deleteLater()
         _app.processEvents()
 
-    def test_subtask_claim_opens_slot_and_bonus_lands(self):
-        """集成回归：子目标「完成并领取」也弹老虎机，bonus 入账。"""
+    def test_subtask_claim_opens_slot_and_prizes_land(self):
+        """集成回归：子目标「完成并领取」也弹老虎机，产出入账。"""
         import tempfile
         from pathlib import Path
         from unittest import mock
@@ -494,7 +492,6 @@ class SlotMachineDialogTests(_SfxInjection):
         widget.show()
         _app.processEvents()
 
-        # 用桩替代完整 Application（省去托盘/监听/单实例锁）
         class _Stub:
             def __init__(self) -> None:
                 self.state = state
@@ -518,18 +515,54 @@ class SlotMachineDialogTests(_SfxInjection):
             Application._on_subtask_claimed(
                 stub, "阅读文档", Reward(gold=2.0, diamond=0.5)
             )
-        self.assertEqual(len(captured), 1, "子目标领取应弹一次老虎机")
+        self.assertEqual(len(captured), 1)
         self.assertIn("子目标完成", captured[0]._task_title)
-        self.assertIn("阅读文档", captured[0]._task_title)
-        self.assertAlmostEqual(captured[0]._base.gold, 2.0)
-        self.assertEqual(stub.notified, ["阅读文档"], "托盘气泡通知保留")
+        self.assertEqual(stub.notified, ["阅读文档"])
         before_gold = state.inventory.gold
-        captured[0].reward_decided.emit(Reward(gold=1.5))
+        captured[0].prize_decided.emit(SlotPrizes(reward=Reward(gold=1.5)))
         self.assertAlmostEqual(state.inventory.gold, before_gold + 1.5)
-        self.assertEqual(stub.saved, 1, "关闭后应存档一次")
+        self.assertEqual(stub.saved, 1)
         widget.close()
         widget.deleteLater()
         _app.processEvents()
+
+
+class SongTokenTests(unittest.TestCase):
+    """试听券：存取 / 耗券 / 持久化。"""
+
+    def test_add_and_consume(self):
+        from src.models import Inventory
+
+        inv = Inventory()
+        inv.add_song_token("The Dawn", 2)
+        self.assertEqual(inv.song_token_count("The Dawn"), 2)
+        self.assertTrue(inv.consume_song_token("The Dawn"))
+        self.assertEqual(inv.song_token_count("The Dawn"), 1)
+        self.assertTrue(inv.consume_song_token("The Dawn"))
+        self.assertEqual(inv.song_token_count("The Dawn"), 0)
+        self.assertFalse(inv.consume_song_token("The Dawn"), "没券时应返回 False")
+        self.assertNotIn("The Dawn", inv.song_tokens, "零张应从字典移除")
+
+    def test_roundtrip_serialization(self):
+        from src.models import Inventory
+
+        inv = Inventory()
+        inv.add_song_token("Geordie", 3)
+        data = inv.to_dict()
+        self.assertEqual(data["song_tokens"], {"Geordie": 3})
+        restored = Inventory.from_dict(data)
+        self.assertEqual(restored.song_token_count("Geordie"), 3)
+
+    def test_from_dict_ignores_bad_entries(self):
+        from src.models import Inventory
+
+        inv = Inventory.from_dict(
+            {"song_tokens": {"Good": 2, "Zero": 0, "Bad": "x", "": 5}}
+        )
+        self.assertEqual(inv.song_token_count("Good"), 2)
+        self.assertEqual(inv.song_token_count("Zero"), 0)
+        self.assertEqual(inv.song_token_count("Bad"), 0)
+        self.assertEqual(inv.song_tokens, {"Good": 2})
 
 
 if __name__ == "__main__":

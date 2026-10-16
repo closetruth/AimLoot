@@ -369,18 +369,17 @@ class Application(QObject):
         logger.info("领取子目标「%s」: gold=%.1f diamond=%.1f", title, reward.gold, reward.diamond)
         self._notify_subtask_claim(reward, title=title)
 
-        from .ui_slot_machine import SlotMachineDialog
+        from .ui_slot_machine import SlotMachineDialog, SlotPrizes
 
         base = reward if reward is not None else Reward()
 
-        def _apply_slot_bonus(bonus: object) -> None:
-            b = bonus if isinstance(bonus, Reward) else Reward()
-            if not b.is_empty():
-                self.state.inventory.add(b)
+        def _apply_slot_prizes(prizes: object) -> None:
+            if isinstance(prizes, SlotPrizes):
+                prizes.apply(self.state.inventory)
                 self.widget.kick_currency_display()
 
         dialog = SlotMachineDialog(base, task_title=f"子目标完成 · {title}", parent=self.widget)
-        dialog.reward_decided.connect(_apply_slot_bonus)
+        dialog.prize_decided.connect(_apply_slot_prizes)
         dialog.exec()
         dialog.deleteLater()
         self._safe_save()
@@ -570,18 +569,23 @@ class Application(QObject):
         if song is None:
             logger.warning("BGM 歌曲未找到: %s", song_name)
             return
-        letter_counts: dict = song["letter_counts"]
-        if not self.state.inventory.can_afford_letters(letter_counts):
-            QMessageBox.warning(self.widget, "字母不足", f"普通稀有度字母不足以兑换「{song_name}」")
-            return
-        if not self.state.inventory.spend_letters(letter_counts):
-            QMessageBox.warning(self.widget, "字母不足", "消耗字母失败")
-            return
-        logger.info(
-            "BGM 兑换: %s, 消耗字母: %s",
-            song_name,
-            " ".join(f"{k}×{v}" for k, v in sorted(letter_counts.items())),
-        )
+        # 有试听券优先耗券免费听
+        used_token = self.state.inventory.consume_song_token(song_name)
+        if not used_token:
+            letter_counts: dict = song["letter_counts"]
+            if not self.state.inventory.can_afford_letters(letter_counts):
+                QMessageBox.warning(self.widget, "字母不足", f"普通稀有度字母不足以兑换「{song_name}」")
+                return
+            if not self.state.inventory.spend_letters(letter_counts):
+                QMessageBox.warning(self.widget, "字母不足", "消耗字母失败")
+                return
+            logger.info(
+                "BGM 兑换: %s, 消耗字母: %s",
+                song_name,
+                " ".join(f"{k}×{v}" for k, v in sorted(letter_counts.items())),
+            )
+        else:
+            logger.info("BGM 试听券播放: %s（免费）", song_name)
         self.sfx.play_bgm(song["path"], song_name)
         self._safe_save()
         if self._inv_dialog is not None and self._inv_dialog.isVisible():

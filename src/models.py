@@ -428,6 +428,8 @@ class Inventory:
     chests: List[ChestItem] = field(default_factory=list)
     # 字母收集：{"A": [普通, 罕见, 稀有, 史诗, 传奇 的计数]}，键为大写 A-Z
     letters: Dict[str, List[int]] = field(default_factory=dict)
+    # 歌曲试听券：{歌名: 张数}；播放时优先耗券免费听一次
+    song_tokens: Dict[str, int] = field(default_factory=dict)
 
     def add(self, reward: Reward) -> None:
         self.gold += reward.gold
@@ -456,6 +458,28 @@ class Inventory:
             counts = [0, 0, 0, 0, 0]
             self.letters[letter] = counts
         counts[rarity] += 1
+
+    def add_song_token(self, song_name: str, count: int = 1) -> None:
+        """累加歌曲试听券（歌名 → 张数）。"""
+        name = str(song_name or "").strip()
+        if not name or count <= 0:
+            return
+        self.song_tokens[name] = self.song_tokens.get(name, 0) + int(count)
+
+    def song_token_count(self, song_name: str) -> int:
+        return self.song_tokens.get(str(song_name or "").strip(), 0)
+
+    def consume_song_token(self, song_name: str) -> bool:
+        """消耗一张试听券；没有券返回 False。"""
+        name = str(song_name or "").strip()
+        have = self.song_tokens.get(name, 0)
+        if have <= 0:
+            return False
+        if have == 1:
+            self.song_tokens.pop(name, None)
+        else:
+            self.song_tokens[name] = have - 1
+        return True
 
     def letter_total(self, letter: str) -> int:
         """某字母的全部稀有度总数。"""
@@ -524,11 +548,22 @@ class Inventory:
                         except (TypeError, ValueError):
                             counts[i] = 0
                     letters[key] = counts
+        raw_tokens = data.get("song_tokens", {})
+        song_tokens: Dict[str, int] = {}
+        if isinstance(raw_tokens, dict):
+            for key, val in raw_tokens.items():
+                try:
+                    n = int(val)
+                except (TypeError, ValueError):
+                    continue
+                if n > 0 and isinstance(key, str) and key.strip():
+                    song_tokens[key.strip()] = n
         return cls(
             gold=float(data.get("gold", 0)),
             diamond=float(data.get("diamond", 0)),
             chests=chests,
             letters=letters,
+            song_tokens=song_tokens,
         )
 
     def to_dict(self) -> Dict:
@@ -537,6 +572,7 @@ class Inventory:
             "diamond": float(self.diamond),
             "chests": [c.to_dict() for c in self.chests],
             "letters": {k: [int(v) for v in vals] for k, vals in self.letters.items()},
+            "song_tokens": {k: int(v) for k, v in self.song_tokens.items()},
         }
 
 

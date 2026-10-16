@@ -569,9 +569,12 @@ class InventoryDialog(QDialog):
             btn = row_info["btn"]
             cost_lbl = row_info["cost_lbl"]
             letter_counts: Dict[str, int] = song["letter_counts"]
+            tokens = inv.song_token_count(str(song["name"]))
 
             can_afford = True
             parts: list[str] = []
+            if tokens > 0:
+                parts.append(f'<span style="color:#c9a0ff">试听券×{tokens}</span>')
             for letter in sorted(letter_counts):
                 need = letter_counts[letter]
                 have = inv.letter_common_count(letter)
@@ -581,7 +584,7 @@ class InventoryDialog(QDialog):
                 else:
                     parts.append(f'{letter}×{need}({have})')
             cost_lbl.setText(" ".join(parts))
-            btn.setEnabled(can_afford)
+            btn.setEnabled(tokens > 0 or can_afford)
 
     def set_bgm_status(self, name: str) -> None:
         if name:
