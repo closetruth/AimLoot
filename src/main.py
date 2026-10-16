@@ -368,11 +368,22 @@ class Application(QObject):
     def _on_subtask_claimed(self, title: str, reward: Reward) -> None:
         logger.info("领取子目标「%s」: gold=%.1f diamond=%.1f", title, reward.gold, reward.diamond)
         self._notify_subtask_claim(reward, title=title)
-        QMessageBox.information(
-            self.widget,
-            "领取成功",
-            f"「{title}」\n获得 {format_reward_gain(reward.gold, reward.diamond)}",
-        )
+
+        from .ui_slot_machine import SlotMachineDialog
+
+        base = reward if reward is not None else Reward()
+
+        def _apply_slot_bonus(bonus: object) -> None:
+            b = bonus if isinstance(bonus, Reward) else Reward()
+            if not b.is_empty():
+                self.state.inventory.add(b)
+                self.widget.kick_currency_display()
+
+        dialog = SlotMachineDialog(base, task_title=f"子目标完成 · {title}", parent=self.widget)
+        dialog.reward_decided.connect(_apply_slot_bonus)
+        dialog.exec()
+        dialog.deleteLater()
+        self._safe_save()
 
     def _on_chest_bagged(self) -> None:
         self.sfx.play_chest_get()

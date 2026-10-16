@@ -331,6 +331,64 @@ class SlotMachineDialogTests(_SfxInjection):
         widget.deleteLater()
         _app.processEvents()
 
+    def test_subtask_claim_opens_slot_and_bonus_lands(self):
+        """集成回归：子目标「完成并领取」也弹老虎机，bonus 入账。"""
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from src.main import Application
+        from src.models import AppState
+        from src.power_monitor import PowerMonitor
+        from src.task_manager import TaskManager
+        from src.widget import FloatingWidget
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = AppState()
+        manager = TaskManager(state, PowerMonitor())
+        manager._intervals_path = Path(tmp.name) / "runtime_intervals.json"
+        widget = FloatingWidget(state, manager)
+        widget.show()
+        _app.processEvents()
+
+        # 用桩替代完整 Application（省去托盘/监听/单实例锁）
+        class _Stub:
+            def __init__(self) -> None:
+                self.state = state
+                self.widget = widget
+                self.saved = 0
+                self.notified: list[str] = []
+
+            def _notify_subtask_claim(self, reward, *, title: str = "") -> None:
+                self.notified.append(title)
+
+            def _safe_save(self) -> None:
+                self.saved += 1
+
+        stub = _Stub()
+        captured: list[SlotMachineDialog] = []
+
+        def _fake_exec(self: SlotMachineDialog) -> None:
+            captured.append(self)
+
+        with mock.patch.object(SlotMachineDialog, "exec", new=_fake_exec):
+            Application._on_subtask_claimed(
+                stub, "阅读文档", Reward(gold=2.0, diamond=0.5)
+            )
+        self.assertEqual(len(captured), 1, "子目标领取应弹一次老虎机")
+        self.assertIn("子目标完成", captured[0]._task_title)
+        self.assertIn("阅读文档", captured[0]._task_title)
+        self.assertAlmostEqual(captured[0]._base.gold, 2.0)
+        self.assertEqual(stub.notified, ["阅读文档"], "托盘气泡通知保留")
+        before_gold = state.inventory.gold
+        captured[0].reward_decided.emit(Reward(gold=1.5))
+        self.assertAlmostEqual(state.inventory.gold, before_gold + 1.5)
+        self.assertEqual(stub.saved, 1, "关闭后应存档一次")
+        widget.close()
+        widget.deleteLater()
+        _app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()
