@@ -61,6 +61,7 @@ _SYM_COLOR = {
     _SYM_NOTE: "#c9a0ff",     # 紫
     _SYM_MISS: "#5a5e6e",
 }
+_SYM_COLOR_Q = {k: QColor(v) for k, v in _SYM_COLOR.items()}
 
 # 三同倍率（金/钻作用于 base 对应币种）；字/♪ 三同给固定数量
 _TRIPLE_PAYOUTS = {
@@ -97,6 +98,18 @@ _NUDGE_H = 7               # 近失回弹位移（中心行向下再弹回）
 _BLINK_MS = 400            # 近失标签闪烁周期
 _BLINK_TOTAL = 5           # 闪烁次数（约 2 秒后定格）
 _NEAR_MISS_COLOR = "#ff9f43"  # 与 ui_text._TOAST_CRIT 一致的橙
+_FLASH_RISE_MS = 150       # 中奖高亮渐亮时长（缓入"啪"点亮）
+_FLASH_GLOW = 0.14         # 中线格泛光底色强度（叠加符号色的比例）
+
+
+def _blend(a: QColor, b: QColor, t: float) -> QColor:
+    """按 t∈[0,1] 在 a→b 之间线性插值（渐亮边框 / 泛光底色）。"""
+    t = max(0.0, min(1.0, t))
+    return QColor(
+        int(a.red() + (b.red() - a.red()) * t),
+        int(a.green() + (b.green() - a.green()) * t),
+        int(a.blue() + (b.blue() - a.blue()) * t),
+    )
 
 
 def spin_result(rng: Optional[random.Random] = None) -> Tuple[int, int, int]:
@@ -254,6 +267,8 @@ class _ReelWidget(QWidget):
         self._target: Optional[float] = None
         self._stopped = True
         self._flash: Optional[str] = None
+        self._flash_strength = 0.0   # 0..1 渐亮系数（QPropertyAnimation 驱动）
+        self._flash_anim: Optional[QPropertyAnimation] = None
         self._nudge = 0.0
         self._nudge_anim: Optional[QPropertyAnimation] = None
         self._timer = QTimer(self)
@@ -265,6 +280,7 @@ class _ReelWidget(QWidget):
         self._target = None
         self._stopped = False
         self._flash = None
+        self._flash_strength = 0.0
         self._slowdown = False
         self._timer.setInterval(_TICK_MS)
         self._timer.start()
@@ -311,9 +327,36 @@ class _ReelWidget(QWidget):
         return _REEL_STRIP[(int(self._offset) - row) % _STRIP_LEN]
 
     def set_flash(self, color: Optional[str]) -> None:
-        """中奖高亮：边框用给定颜色；None 熄灭。"""
+        """中奖高亮：中线格边框渐亮为给定颜色；None 熄灭。"""
         self._flash = color
+        if self._flash_anim is not None:
+            self._flash_anim.stop()
+            self._flash_anim = None
+        if color is None:
+            self._flash_strength = 0.0
+            self.update()
+            return
+        anim = QPropertyAnimation(self, b"flashStrengthProp", self)
+        anim.setDuration(_FLASH_RISE_MS)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+        self._flash_anim = anim
+
+    def get_flash_strength(self) -> float:
+        return self._flash_strength
+
+    def set_flash_strength(self, value: float) -> None:
+        self._flash_strength = float(value)
         self.update()
+
+    flashStrengthProp = Property(float, get_flash_strength, set_flash_strength)
+
+    def stop_flash(self) -> None:
+        if self._flash_anim is not None:
+            self._flash_anim.stop()
+            self._flash_anim = None
 
     def nudge(self, times: int = 2) -> None:
         """近失"想再滚一格"：中心行向下轻推再弹回，重复 times 次。"""
@@ -349,6 +392,7 @@ class _ReelWidget(QWidget):
 
     def stop_timer(self) -> None:
         self._timer.stop()
+        self.stop_flash()
 
     def _on_tick(self) -> None:
         if self._target is None:
@@ -390,19 +434,29 @@ class _ReelWidget(QWidget):
         frac = self._offset - int(self._offset)
         scroll_px = frac * row_h if not self._stopped else 0.0
         p.translate(0, scroll_px + self._nudge * _NUDGE_H)
+        has_flash = self._flash is not None and self._flash_strength > 0.0
+        flash_color = QColor(self._flash) if has_flash else None
+        base_border = QColor(BORDER)
+        base_bg = QColor(BG_CARD)
         # 多画一行，保证平移后上下边缘不露空
         for row in (-2, -1, 0, 1):
             sym = self._symbol_at(row)
             rect = self.rect().adjusted(4, 0, -4, 0)
             rect.moveTop(int((row + 1) * row_h) + 2)
             rect.setHeight(int(row_h) - 4)
-            p.setPen(
-                QPen(
-                    QColor(self._flash if self._flash else BORDER),
-                    2 if self._flash else 1,
-                )
-            )
-            p.setBrush(QColor(BG_CARD))
+            # 只有中线（命中线）格参与高亮：边框渐亮 + 符号色泛光底色
+            center_flash = has_flash and row == 0 and flash_color is not None
+            if center_flash:
+                border = _blend(base_border, flash_color, self._flash_strength)
+                glow_t = self._flash_strength * _FLASH_GLOW
+                bg = _blend(base_bg, _SYM_COLOR_Q[sym], glow_t)
+                pen_w = 2
+            else:
+                border = base_border
+                bg = base_bg
+                pen_w = 1
+            p.setPen(QPen(border, pen_w))
+            p.setBrush(bg)
             p.drawRoundedRect(rect, 6, 6)
             p.setFont(QFont("Microsoft YaHei UI", 26 if row == 0 else 15, QFont.Bold))
             p.setPen(QColor(_SYM_COLOR[sym]))
@@ -568,6 +622,9 @@ class SlotMachineDialog(QDialog):
             for i in range(3):
                 if self._result[i] == triple:
                     self._reels[i].set_flash(_SYM_COLOR[triple])
+        elif prizes.letters:
+            # 樱桃赔付（最左轴字）：只亮左轴一格，小奖的克制感
+            self._reels[0].set_flash(_SYM_COLOR[_SYM_LETTER])
         if not prizes.is_empty():
             text = self._prize_text(triple, prizes)
             color = _SYM_COLOR[triple] if triple is not None else _SYM_COLOR[_SYM_LETTER]

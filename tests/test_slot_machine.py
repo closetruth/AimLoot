@@ -527,6 +527,46 @@ class SlotMachineDialogTests(_SfxInjection):
         _app.processEvents()
 
 
+class HighlightTests(_SfxInjection):
+    """中奖高亮：只亮中线格 + 渐亮强度动画 + 樱桃单格高亮。"""
+
+    def test_flash_animates_strength(self):
+        from src.ui_slot_machine import _SYM_COIN, _ReelWidget
+
+        reel = _ReelWidget()
+        reel.show()
+        reel.set_flash(_SYM_COIN)
+        self.assertIsNotNone(reel._flash_anim)
+        _pump(300)
+        self.assertGreater(reel._flash_strength, 0.9, "渐亮应在 150ms 内到 1.0")
+        reel.set_flash(None)
+        self.assertEqual(reel._flash_strength, 0.0)
+        reel.close()
+
+    def test_triple_highlights_all_three_reels(self):
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
+        _wait_result(dlg)
+        for reel in dlg._reels:
+            self.assertIsNotNone(reel._flash, "三同格应设高亮色")
+        dlg.close()
+
+    def test_cherry_highlights_only_left_reel(self):
+        """樱桃（最左轴字）：只有左轴亮，另外两轴不高亮。"""
+        dlg = _make_dialog(Reward(), result=(2, 4, 4), rng=_StubRng())
+        _wait_result(dlg)
+        self.assertIsNotNone(dlg._reels[0]._flash, "樱桃应亮左轴")
+        self.assertIsNone(dlg._reels[1]._flash, "未中轴不应高亮")
+        self.assertIsNone(dlg._reels[2]._flash)
+        dlg.close()
+
+    def test_no_prize_no_flash(self):
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 4))
+        _wait_result(dlg)
+        for reel in dlg._reels:
+            self.assertIsNone(reel._flash, "未中奖不应高亮")
+        dlg.close()
+
+
 class SongTokenTests(unittest.TestCase):
     """试听券：存取 / 耗券 / 持久化。"""
 
