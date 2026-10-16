@@ -55,10 +55,14 @@ _FALLBACK_BASE = 1.0  # base 该币种为 0 时的兜底基准（宝箱场景也
 
 _TICK_MS = 55             # 每 tick 滚动 1 格
 _STOP_START_MS = 600      # 第一轴开始停的时间
-_STOP_STAGGER_MS = 200    # 相邻两轴开始停的间隔
+_STOP_STAGGER_MS = 200    # 相邻两轴开始停的间隔（仅在需要时使用）
 _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
+
+_SLOW_STEP_MS = 40        # 减速：每 tick 间隔增量
+_SLOW_MAX_TICK_MS = 170   # 减速间隔上限
+_FREEZE_MS = 420          # 最后一格前定格时长（悬念顶点）
 
 _NEAR_MISS_DELAY_MS = 300  # 三轴停稳后静置节拍，再揭晓近失反馈
 _NUDGE_H = 7               # 近失回弹位移（中心行向下再弹回）
@@ -84,6 +88,16 @@ def _match_of(s0: int, s1: int, s2: int) -> Tuple[str, Optional[int]]:
         if (s0, s1, s2).count(sym) == 2:
             return ("pair", sym)
     return ("none", None)
+
+
+def third_has_suspense(result: Tuple[int, int, int]) -> bool:
+    """第三轴是否值得减速停：前两轴同号（冲三同/近失），
+    或恰有一个 ✕（第三轴决定救回两同还是差一点）。
+    金钻混排看起来不沾边，快停快揭。"""
+    a, b = result[0], result[1]
+    if a == b:
+        return True
+    return (a == _SYM_MISS) != (b == _SYM_MISS)
 
 
 def compute_bonus(
@@ -134,17 +148,25 @@ class _ReelWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(_TICK_MS)
         self._timer.timeout.connect(self._on_tick)
+        self._slowdown = False       # 减速停轴演出中
+        self._freeze_timer: Optional[QTimer] = None
 
     def start_spin(self) -> None:
         self._target = None
         self._stopped = False
         self._flash = None
+        self._slowdown = False
+        self._timer.setInterval(_TICK_MS)
         self._timer.start()
 
-    def stop_at(self, symbol: int) -> None:
-        """从当前 offset 往后找最近一个等于 symbol 的格子作为停点。"""
+    def stop_at(self, symbol: int, *, slowdown: bool = False) -> None:
+        """从当前 offset 往后找最近一个等于 symbol 的格子作为停点。
+
+        slowdown=True 时走减速悬念：每 tick 拉长间隔，且最后一格落定前定格。
+        """
         if self._stopped or self._target is not None:
             return
+        self._slowdown = slowdown
         for step in range(1, _STRIP_LEN + 1):
             if _REEL_STRIP[(self._offset + step) % _STRIP_LEN] == symbol:
                 self._target = self._offset + step
@@ -155,6 +177,14 @@ class _ReelWidget(QWidget):
 
     def center_symbol(self) -> int:
         return _REEL_STRIP[self._offset % _STRIP_LEN]
+
+    def _symbol_at(self, row: int) -> int:
+        """符号带取样：row -1=上格 / 0=中心 / 1=下格。
+
+        offset 递增时上格符号下一帧落到中心 → 整体自上而下流动（向下滚），
+        与近失 nudge 的向下回弹、"掉金币"直觉一致。
+        """
+        return _REEL_STRIP[(self._offset - row) % _STRIP_LEN]
 
     def set_flash(self, color: Optional[str]) -> None:
         """中奖高亮：边框用给定颜色；None 熄灭。"""
@@ -191,12 +221,37 @@ class _ReelWidget(QWidget):
 
     def stop_timer(self) -> None:
         self._timer.stop()
+        if self._freeze_timer is not None:
+            self._freeze_timer.stop()
 
     def _on_tick(self) -> None:
         self._offset += 1
         self.update()
-        if self._target is not None and self._offset >= self._target:
+        if self._target is None:
+            return
+        if self._offset >= self._target:
             self._halt()
+            return
+        if self._slowdown:
+            self._apply_slowdown_step()
+
+    def _apply_slowdown_step(self) -> None:
+        """减速停轴：每 tick 拉长间隔；最后一格落定前定格制造悬念。"""
+        if self._offset >= self._target - 1:
+            # 定格：暂停在"差一格"画面，等一拍再落定
+            self._timer.stop()
+            self._freeze_timer = QTimer(self)
+            self._freeze_timer.setSingleShot(True)
+            self._freeze_timer.timeout.connect(self._release_freeze)
+            self._freeze_timer.start(_FREEZE_MS)
+            return
+        interval = min(self._timer.interval() + _SLOW_STEP_MS, _SLOW_MAX_TICK_MS)
+        self._timer.setInterval(interval)
+
+    def _release_freeze(self) -> None:
+        if self._stopped:
+            return
+        self._timer.start()
 
     def _halt(self) -> None:
         self._offset = self._target
@@ -211,7 +266,7 @@ class _ReelWidget(QWidget):
         row_h = self.height() / _VISIBLE_ROWS
         p.translate(0, self._nudge * _NUDGE_H)
         for row in (-1, 0, 1):
-            sym = _REEL_STRIP[(self._offset + row) % _STRIP_LEN]
+            sym = self._symbol_at(row)
             rect = self.rect().adjusted(4, 0, -4, 0)
             rect.moveTop(int((row + 1) * row_h) + 2)
             rect.setHeight(int(row_h) - 4)
@@ -334,15 +389,19 @@ class SlotMachineDialog(QDialog):
             sfx.play_slot_spin()
         for reel in self._reels:
             reel.start_spin()
-        for i in range(3):
-            timer = QTimer(self)
-            timer.setSingleShot(True)
-            timer.timeout.connect(partial(self._stop_reel, i))
-            timer.start(_STOP_START_MS + i * _STOP_STAGGER_MS)
-            self._stop_timers.append(timer)
+        self._stopped_count = 0
+        self._stop_timers.clear()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(partial(self._stop_reel, 0))
+        timer.start(_STOP_START_MS)
+        self._stop_timers.append(timer)
 
     def _stop_reel(self, i: int) -> None:
-        self._reels[i].stop_at(self._result[i])
+        # 第三轴：结果构成悬念时减速停（链式停轴下前两轴此刻必然已停，
+        # 所以按结果符号判定，而不是按"还有轴在转"）
+        slowdown = i == 2 and third_has_suspense(self._result)
+        self._reels[i].stop_at(self._result[i], slowdown=slowdown)
 
     def _on_reel_stopped(self) -> None:
         if self._finalized:
@@ -351,11 +410,19 @@ class SlotMachineDialog(QDialog):
         if sfx is not None:
             sfx.play_slot_reel_stop()
         self._stopped_count += 1
-        if self._stopped_count >= 3 and not self._result_shown:
-            sfx = _get_sfx()
+        if self._stopped_count >= 3:
             if sfx is not None:
                 sfx.stop_slot_spin()
-            self._on_all_stopped()
+            if not self._result_shown:
+                self._on_all_stopped()
+            return
+        # 链式停轴：上一轴停稳后隔一小段再让下一轴起停，保证左→右顺序
+        next_index = self._stopped_count
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(partial(self._stop_reel, next_index))
+        timer.start(_STOP_STAGGER_MS)
+        self._stop_timers.append(timer)
 
     def _on_all_stopped(self) -> None:
         if self._finalized or self._result_shown:

@@ -110,6 +110,112 @@ def _wait_result(dlg: SlotMachineDialog, timeout_ms: int = 8000) -> None:
         waited += 100
 
 
+class ReelDirectionTests(unittest.TestCase):
+    """转轮方向回归：向下滚（上格符号下一帧落到中心）。
+
+    与近失 nudge 的向下回弹保持一致，别再改回向上。
+    """
+
+    def test_symbol_flows_downward(self):
+        from src.ui_slot_machine import _ReelWidget
+
+        reel = _ReelWidget()
+        above = reel._symbol_at(-1)   # 当前帧：上方格
+        reel._offset += 1             # 下一帧
+        center_next = reel._symbol_at(0)
+        self.assertEqual(
+            above, center_next,
+            "上一帧的上格符号应落到中心（向下滚动）；若相等失败说明方向被改反了",
+        )
+
+    def test_stopping_at_symbol_lands_center(self):
+        from src.ui_slot_machine import _ReelWidget
+
+        reel = _ReelWidget()
+        reel._offset = 0
+        reel.start_spin()
+        reel.stop_at(1)  # 钻
+        for _ in range(len(_REEL_STRIP) + 2):
+            reel._on_tick()
+        self.assertTrue(reel.is_stopped())
+        self.assertEqual(reel.center_symbol(), 1)
+
+
+class SlowdownTests(unittest.TestCase):
+    """减速停轴：每 tick 拉长间隔，最后一格前定格，然后落定。"""
+
+    def test_normal_stop_keeps_constant_interval(self):
+        from src.ui_slot_machine import _ReelWidget, _TICK_MS
+
+        reel = _ReelWidget()
+        reel._offset = 0
+        reel.start_spin()
+        reel.stop_at(1)
+        for _ in range(len(_REEL_STRIP) + 2):
+            reel._on_tick()
+        self.assertTrue(reel.is_stopped())
+        self.assertEqual(reel._timer.interval(), _TICK_MS, "非减速停不应拉长间隔")
+
+    def test_slowdown_extends_interval(self):
+        from src.ui_slot_machine import _ReelWidget, _TICK_MS
+
+        reel = _ReelWidget()
+        reel._offset = 0
+        reel.start_spin()
+        reel.stop_at(1, slowdown=True)
+        reel._on_tick()
+        reel._on_tick()
+        self.assertGreater(
+            reel._timer.interval(), _TICK_MS,
+            "减速停时每 tick 应拉长间隔",
+        )
+
+    def test_slowdown_freezes_before_last_step(self):
+        from src.ui_slot_machine import _ReelWidget
+
+        reel = _ReelWidget()
+        reel._offset = 0
+        reel.start_spin()
+        reel.stop_at(1, slowdown=True)
+        # 推进到"差一格"（target-1）：最后一步应触发定格而非直接落定
+        while reel._offset < reel._target - 1:
+            reel._on_tick()
+        self.assertFalse(reel._stopped, "定格时不应算停稳")
+        self.assertFalse(reel._timer.isActive(), "定格期间滚动计时器应停")
+        self.assertIsNotNone(reel._freeze_timer)
+        self.assertTrue(reel._freeze_timer.isActive())
+        # 放开定格 → 落定
+        reel._release_freeze()
+        self.assertTrue(reel._timer.isActive())
+        reel._on_tick()
+        self.assertTrue(reel.is_stopped())
+        self.assertEqual(reel.center_symbol(), 1)
+
+    def test_third_suspense_detection(self):
+        from src.ui_slot_machine import third_has_suspense
+
+        self.assertTrue(third_has_suspense((0, 0, 9)), "金金 冲三同")
+        self.assertTrue(third_has_suspense((1, 1, 9)), "钻钻 冲三同")
+        self.assertTrue(third_has_suspense((2, 2, 9)), "×× 冲近失")
+        self.assertTrue(third_has_suspense((0, 2, 9)), "金× 第三轴定生死")
+        self.assertTrue(third_has_suspense((2, 1, 9)), "×钻 同上")
+        self.assertFalse(third_has_suspense((0, 1, 9)), "金钻混排无悬念")
+        self.assertFalse(third_has_suspense((1, 0, 9)), "钻金混排无悬念")
+
+    def test_freeze_timer_cleared_on_stop_timer(self):
+        from src.ui_slot_machine import _ReelWidget
+
+        reel = _ReelWidget()
+        reel._offset = 0
+        reel.start_spin()
+        reel.stop_at(1, slowdown=True)
+        while reel._offset < reel._target - 1:
+            reel._on_tick()
+        self.assertTrue(reel._freeze_timer.isActive())
+        reel.stop_timer()  # 关闭路径
+        self.assertFalse(reel._freeze_timer.isActive(), "stop_timer 必须停掉定格计时器")
+
+
 class PureFunctionTests(unittest.TestCase):
     """纯函数：匹配判定 / 奖励计算 / 取样。"""
 
