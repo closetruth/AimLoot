@@ -142,54 +142,94 @@ class ReelDirectionTests(unittest.TestCase):
 
 
 class SlowdownTests(unittest.TestCase):
-    """减速停轴：每 tick 拉长间隔，最后一格前定格，然后落定。"""
+    """减速停轴：阻尼式步长收缩（连续滑行），无定格。"""
 
-    def test_normal_stop_keeps_constant_interval(self):
-        from src.ui_slot_machine import _ReelWidget, _TICK_MS
+    def test_normal_stop_keeps_constant_step(self):
+        from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
 
         reel = _ReelWidget()
-        reel._offset = 0
+        reel._offset = 0.0
         reel.start_spin()
         reel.stop_at(1)
-        for _ in range(len(_REEL_STRIP) + 2):
-            reel._on_tick()
-        self.assertTrue(reel.is_stopped())
-        self.assertEqual(reel._timer.interval(), _TICK_MS, "非减速停不应拉长间隔")
-
-    def test_slowdown_extends_interval(self):
-        from src.ui_slot_machine import _ReelWidget, _TICK_MS
-
-        reel = _ReelWidget()
-        reel._offset = 0
-        reel.start_spin()
-        reel.stop_at(1, slowdown=True)
+        start = reel._offset
         reel._on_tick()
-        reel._on_tick()
-        self.assertGreater(
-            reel._timer.interval(), _TICK_MS,
-            "减速停时每 tick 应拉长间隔",
+        self.assertAlmostEqual(
+            reel._offset - start, _NORMAL_STEP,
+            msg="非减速停应匀速推进",
         )
 
-    def test_slowdown_freezes_before_last_step(self):
-        from src.ui_slot_machine import _ReelWidget
+    def test_slowdown_shrinks_step_near_target(self):
+        from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
 
         reel = _ReelWidget()
-        reel._offset = 0
+        reel._offset = 0.0
         reel.start_spin()
         reel.stop_at(1, slowdown=True)
-        # 推进到"差一格"（target-1）：最后一步应触发定格而非直接落定
-        while reel._offset < reel._target - 1:
+        steps = []
+        prev = reel._offset
+        for _ in range(2000):
             reel._on_tick()
-        self.assertFalse(reel._stopped, "定格时不应算停稳")
-        self.assertFalse(reel._timer.isActive(), "定格期间滚动计时器应停")
-        self.assertIsNotNone(reel._freeze_timer)
-        self.assertTrue(reel._freeze_timer.isActive())
-        # 放开定格 → 落定
-        reel._release_freeze()
-        self.assertTrue(reel._timer.isActive())
-        reel._on_tick()
+            steps.append(reel._offset - prev)
+            prev = reel._offset
+            if reel.is_stopped():
+                break
         self.assertTrue(reel.is_stopped())
         self.assertEqual(reel.center_symbol(), 1)
+        self.assertLess(
+            min(steps[-6:]), _NORMAL_STEP * 0.5,
+            "临近停点应显著减速（阻尼步长收缩）",
+        )
+        # 末尾步长应远小于起始步长（阻尼趋势）
+        self.assertLess(min(steps[-6:]), max(steps[:6]))
+
+    def test_suspense_leads_miss_to_hot_above(self):
+        """金× 悬念：停点应优选"上格是金"的 ×，定格画面 = 金悬在上方。"""
+        from src.ui_slot_machine import (
+            _REEL_STRIP,
+            _ReelWidget,
+            _SYM_COIN,
+            _SYM_MISS,
+        )
+
+        reel = _ReelWidget()
+        reel._offset = 0.0
+        reel.start_spin()
+        reel.stop_at(_SYM_MISS, slowdown=True, hot=_SYM_COIN)
+        for _ in range(2000):
+            reel._on_tick()
+            if reel.is_stopped():
+                break
+        self.assertTrue(reel.is_stopped())
+        self.assertEqual(reel.center_symbol(), _SYM_MISS)
+        # 上格（screen row -1）= strip[idx+1]
+        idx = int(reel._offset) % len(_REEL_STRIP)
+        above = _REEL_STRIP[(idx + 1) % len(_REEL_STRIP)]
+        self.assertEqual(above, _SYM_COIN, "停 × 时上格应为热符号（金）")
+
+    def test_preferred_miss_stop_pure(self):
+        from src.ui_slot_machine import (
+            _REEL_STRIP,
+            _SYM_COIN,
+            _SYM_DIAMOND,
+            preferred_miss_stop,
+        )
+
+        # 从任一 start 出发都能找到"上格是金"的 ×（strip 里保证存在）
+        for start in range(len(_REEL_STRIP)):
+            step = preferred_miss_stop(_REEL_STRIP, start, _SYM_COIN)
+            self.assertIsNotNone(step)
+            idx = (start + step) % len(_REEL_STRIP)
+            self.assertEqual(_REEL_STRIP[idx], 2)
+            self.assertEqual(_REEL_STRIP[(idx + 1) % len(_REEL_STRIP)], _SYM_COIN)
+        self.assertIsNone(preferred_miss_stop(_REEL_STRIP, 0, None))
+
+    def test_hot_symbol_detection(self):
+        from src.ui_slot_machine import hot_symbol_for
+
+        self.assertEqual(hot_symbol_for(2, (0, 0)), 0, "金金× → 热符号金")
+        self.assertEqual(hot_symbol_for(2, (0, 2)), 0, "金×× → 热符号金")
+        self.assertEqual(hot_symbol_for(2, (2, 2)), None, "××× 无热符号")
+        self.assertIsNone(hot_symbol_for(0, (0, 2)), "停金时无热符号概念")
 
     def test_third_suspense_detection(self):
         from src.ui_slot_machine import third_has_suspense
@@ -202,18 +242,14 @@ class SlowdownTests(unittest.TestCase):
         self.assertFalse(third_has_suspense((0, 1, 9)), "金钻混排无悬念")
         self.assertFalse(third_has_suspense((1, 0, 9)), "钻金混排无悬念")
 
-    def test_freeze_timer_cleared_on_stop_timer(self):
+    def test_scroll_frac_subpixel(self):
         from src.ui_slot_machine import _ReelWidget
 
         reel = _ReelWidget()
-        reel._offset = 0
-        reel.start_spin()
-        reel.stop_at(1, slowdown=True)
-        while reel._offset < reel._target - 1:
-            reel._on_tick()
-        self.assertTrue(reel._freeze_timer.isActive())
-        reel.stop_timer()  # 关闭路径
-        self.assertFalse(reel._freeze_timer.isActive(), "stop_timer 必须停掉定格计时器")
+        reel._offset = 3.4
+        self.assertAlmostEqual(reel.get_scroll_frac(), 0.4, places=5)
+        reel._offset = 7.0
+        self.assertAlmostEqual(reel.get_scroll_frac(), 0.0, places=5)
 
 
 class PureFunctionTests(unittest.TestCase):

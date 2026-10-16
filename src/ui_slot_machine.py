@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import math
 import random
 from functools import partial
 from typing import List, Optional, Tuple
@@ -53,16 +54,20 @@ _PAYOUTS = {
 }
 _FALLBACK_BASE = 1.0  # base 该币种为 0 时的兜底基准（宝箱场景也有实奖）
 
-_TICK_MS = 55             # 每 tick 滚动 1 格
+_TICK_MS = 16             # 60fps 连续滚动
+_SPIN_CELLS_PER_SEC = 18.0  # 匀速滚动速度（格/秒）
 _STOP_START_MS = 600      # 第一轴开始停的时间
-_STOP_STAGGER_MS = 200    # 相邻两轴开始停的间隔（仅在需要时使用）
+_STOP_STAGGER_MS = 200    # 相邻两轴开始停的间隔（链式停轴，上一轴停稳后延迟）
+_SLOW_LEAD_MS = 820       # 第三轴减速演出前多转一会儿（阻尼滑行区更从容）
 _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
 
-_SLOW_STEP_MS = 40        # 减速：每 tick 间隔增量
-_SLOW_MAX_TICK_MS = 170   # 减速间隔上限
-_FREEZE_MS = 420          # 最后一格前定格时长（悬念顶点）
+# 减速停轴（阻尼式）：剩余距离从该值起开始减速，近端最慢步长
+_SLOW_ZONE_CELLS = 7.0    # 剩余几格开始进入减速区
+_SLOW_MIN_STEP = 0.06     # 减速近端每帧步长（≈260ms/格）
+_SLOW_EASE_POW = 1.6      # 减速曲线指数（越大末尾越拖）
+_NORMAL_STEP = _SPIN_CELLS_PER_SEC * _TICK_MS / 1000.0  # 匀速每帧步长
 
 _NEAR_MISS_DELAY_MS = 300  # 三轴停稳后静置节拍，再揭晓近失反馈
 _NUDGE_H = 7               # 近失回弹位移（中心行向下再弹回）
@@ -100,6 +105,41 @@ def third_has_suspense(result: Tuple[int, int, int]) -> bool:
     return (a == _SYM_MISS) != (b == _SYM_MISS)
 
 
+def hot_symbol_for(last_symbol: int, prev_symbols: Tuple[int, ...]) -> Optional[int]:
+    """减速停轴时最后停的若是 ×，"热符号"应是前两轴里出现的金/钻。
+
+    定格瞬间中心停在热符号上、上格悬着 ×，制造"差一点掉下来"的画面。
+    没有热符号（如 ×× 开局）时返回 None。
+    """
+    if last_symbol != _SYM_MISS:
+        return None
+    for sym in (_SYM_COIN, _SYM_DIAMOND):
+        if sym in prev_symbols:
+            return sym
+    return None
+
+
+def preferred_miss_stop(
+    strip: Tuple[int, ...],
+    start: int,
+    hot: Optional[int],
+) -> Optional[int]:
+    """在 strip 中找一颗 ×，使其**正上方**显示 hot 符号（自 start 向后最近的一颗）。
+
+    屏幕上格显示 strip[idx+1]（下滚方向），所以条件是 strip[idx+1] == hot：
+    停稳后中心是 ×、上格是热符号，玩家刚看到热符号经过、又被 × 顶掉。
+    返回相对 start 的步数；找不到返回 None。
+    """
+    if hot is None:
+        return None
+    n = len(strip)
+    for step in range(1, n + 1):
+        idx = (start + step) % n
+        if strip[idx] == _SYM_MISS and strip[(idx + 1) % n] == hot:
+            return step
+    return None
+
+
 def compute_bonus(
     s0: int,
     s1: int,
@@ -132,15 +172,15 @@ def _get_sfx():
 
 
 class _ReelWidget(QWidget):
-    """单轴转轮：55ms/tick 滚动符号带，停稳在目标符号上。"""
+    """单轴转轮：60fps 浮点连续滚动，阻尼式减速停稳在目标符号上。"""
 
     stopped = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(_REEL_W, _REEL_H)
-        self._offset = random.randrange(_STRIP_LEN)
-        self._target: Optional[int] = None
+        self._offset = float(random.randrange(_STRIP_LEN))
+        self._target: Optional[float] = None
         self._stopped = True
         self._flash: Optional[str] = None
         self._nudge = 0.0
@@ -149,7 +189,6 @@ class _ReelWidget(QWidget):
         self._timer.setInterval(_TICK_MS)
         self._timer.timeout.connect(self._on_tick)
         self._slowdown = False       # 减速停轴演出中
-        self._freeze_timer: Optional[QTimer] = None
 
     def start_spin(self) -> None:
         self._target = None
@@ -159,24 +198,38 @@ class _ReelWidget(QWidget):
         self._timer.setInterval(_TICK_MS)
         self._timer.start()
 
-    def stop_at(self, symbol: int, *, slowdown: bool = False) -> None:
-        """从当前 offset 往后找最近一个等于 symbol 的格子作为停点。
+    def stop_at(
+        self,
+        symbol: int,
+        *,
+        slowdown: bool = False,
+        hot: Optional[int] = None,
+    ) -> None:
+        """从当前 offset 往后找最近的 symbol 格作为停点（整格对齐）。
 
-        slowdown=True 时走减速悬念：每 tick 拉长间隔，且最后一格落定前定格。
+        slowdown=True 时阻尼减速滑行到停点。
+        hot 给定时（如最后一轴停 ×），优先选"上格是 hot"的 ×，
+        使定格画面是"热符号悬在线上一格、× 掉到线上"。
         """
         if self._stopped or self._target is not None:
             return
         self._slowdown = slowdown
+        base = math.ceil(self._offset)
+        if symbol == _SYM_MISS:
+            step = preferred_miss_stop(_REEL_STRIP, base, hot)
+            if step is not None:
+                self._target = base + step
+                return
         for step in range(1, _STRIP_LEN + 1):
-            if _REEL_STRIP[(self._offset + step) % _STRIP_LEN] == symbol:
-                self._target = self._offset + step
+            if _REEL_STRIP[(base + step) % _STRIP_LEN] == symbol:
+                self._target = base + step
                 return
 
     def is_stopped(self) -> bool:
         return self._stopped
 
     def center_symbol(self) -> int:
-        return _REEL_STRIP[self._offset % _STRIP_LEN]
+        return _REEL_STRIP[int(self._offset) % _STRIP_LEN]
 
     def _symbol_at(self, row: int) -> int:
         """符号带取样：row -1=上格 / 0=中心 / 1=下格。
@@ -184,7 +237,7 @@ class _ReelWidget(QWidget):
         offset 递增时上格符号下一帧落到中心 → 整体自上而下流动（向下滚），
         与近失 nudge 的向下回弹、"掉金币"直觉一致。
         """
-        return _REEL_STRIP[(self._offset - row) % _STRIP_LEN]
+        return _REEL_STRIP[(int(self._offset) - row) % _STRIP_LEN]
 
     def set_flash(self, color: Optional[str]) -> None:
         """中奖高亮：边框用给定颜色；None 熄灭。"""
@@ -214,6 +267,10 @@ class _ReelWidget(QWidget):
 
     nudgeProp = Property(float, get_nudge, set_nudge)
 
+    def get_scroll_frac(self) -> float:
+        """当前格内进度 0..1（用于亚像素平移）。"""
+        return self._offset - int(self._offset)
+
     def stop_nudge(self) -> None:
         if self._nudge_anim is not None:
             self._nudge_anim.stop()
@@ -221,40 +278,33 @@ class _ReelWidget(QWidget):
 
     def stop_timer(self) -> None:
         self._timer.stop()
-        if self._freeze_timer is not None:
-            self._freeze_timer.stop()
 
     def _on_tick(self) -> None:
-        self._offset += 1
-        self.update()
         if self._target is None:
+            self._offset += _NORMAL_STEP
+            self.update()
             return
-        if self._offset >= self._target:
+        remaining = self._target - self._offset
+        step = self._step_for_remaining(remaining) if self._slowdown else _NORMAL_STEP
+        # 取 min 精确落格：最后一帧不吸附、不跳像素
+        step = min(step, remaining)
+        self._offset += step
+        if self._offset >= self._target - 1e-9:
             self._halt()
             return
-        if self._slowdown:
-            self._apply_slowdown_step()
+        self.update()
 
-    def _apply_slowdown_step(self) -> None:
-        """减速停轴：每 tick 拉长间隔；最后一格落定前定格制造悬念。"""
-        if self._offset >= self._target - 1:
-            # 定格：暂停在"差一格"画面，等一拍再落定
-            self._timer.stop()
-            self._freeze_timer = QTimer(self)
-            self._freeze_timer.setSingleShot(True)
-            self._freeze_timer.timeout.connect(self._release_freeze)
-            self._freeze_timer.start(_FREEZE_MS)
-            return
-        interval = min(self._timer.interval() + _SLOW_STEP_MS, _SLOW_MAX_TICK_MS)
-        self._timer.setInterval(interval)
-
-    def _release_freeze(self) -> None:
-        if self._stopped:
-            return
-        self._timer.start()
+    @staticmethod
+    def _step_for_remaining(remaining: float) -> float:
+        """阻尼减速：剩余越少步长越小（幂曲线），近端收敛到 _SLOW_MIN_STEP。"""
+        if remaining >= _SLOW_ZONE_CELLS:
+            return _NORMAL_STEP
+        t = max(0.0, remaining / _SLOW_ZONE_CELLS)
+        eased = t ** _SLOW_EASE_POW
+        return max(_SLOW_MIN_STEP, _NORMAL_STEP * eased)
 
     def _halt(self) -> None:
-        self._offset = self._target
+        self._offset = float(self._target)
         self._timer.stop()
         self._stopped = True
         self.update()
@@ -264,8 +314,13 @@ class _ReelWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         row_h = self.height() / _VISIBLE_ROWS
-        p.translate(0, self._nudge * _NUDGE_H)
-        for row in (-1, 0, 1):
+        # 亚像素平移：格内进度 × 行高，让滚动连续而非整格跳。
+        # nudge 为"想再滚一格"的向下推（正方向与滚向一致）。
+        frac = self._offset - int(self._offset)
+        scroll_px = frac * row_h if not self._stopped else 0.0
+        p.translate(0, scroll_px + self._nudge * _NUDGE_H)
+        # 多画一行，保证平移后上下边缘不露空
+        for row in (-2, -1, 0, 1):
             sym = self._symbol_at(row)
             rect = self.rect().adjusted(4, 0, -4, 0)
             rect.moveTop(int((row + 1) * row_h) + 2)
@@ -401,7 +456,11 @@ class SlotMachineDialog(QDialog):
         # 第三轴：结果构成悬念时减速停（链式停轴下前两轴此刻必然已停，
         # 所以按结果符号判定，而不是按"还有轴在转"）
         slowdown = i == 2 and third_has_suspense(self._result)
-        self._reels[i].stop_at(self._result[i], slowdown=slowdown)
+        # 减速停时若停在 ×，优选"上格是热符号"的 ×，定格成"差一点掉下来"画面
+        hot = None
+        if slowdown:
+            hot = hot_symbol_for(self._result[i], tuple(self._result[:i]))
+        self._reels[i].stop_at(self._result[i], slowdown=slowdown, hot=hot)
 
     def _on_reel_stopped(self) -> None:
         if self._finalized:
@@ -416,12 +475,16 @@ class SlotMachineDialog(QDialog):
             if not self._result_shown:
                 self._on_all_stopped()
             return
-        # 链式停轴：上一轴停稳后隔一小段再让下一轴起停，保证左→右顺序
+        # 链式停轴：上一轴停稳后隔一小段再让下一轴起停，保证左→右顺序。
+        # 第三轴走减速演出时留更长的自由转时间，阻尼滑行区更从容。
         next_index = self._stopped_count
+        delay = _STOP_STAGGER_MS
+        if next_index == 2 and third_has_suspense(self._result):
+            delay = _SLOW_LEAD_MS
         timer = QTimer(self)
         timer.setSingleShot(True)
         timer.timeout.connect(partial(self._stop_reel, next_index))
-        timer.start(_STOP_STAGGER_MS)
+        timer.start(delay)
         self._stop_timers.append(timer)
 
     def _on_all_stopped(self) -> None:
