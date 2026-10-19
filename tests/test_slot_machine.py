@@ -27,9 +27,9 @@ from src.ui_slot_machine import (
     _SYM_COIN,
     _SYM_DIAMOND,
     _SYM_LETTER,
-    _SYM_MISS,
     _SYM_NOTE,
     compute_prizes,
+    near_miss_symbol,
     spin_result,
 )
 
@@ -137,10 +137,17 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(_match_of(1, 1, 1), _SYM_DIAMOND)
         self.assertEqual(_match_of(2, 2, 2), _SYM_LETTER)
         self.assertEqual(_match_of(3, 3, 3), _SYM_NOTE)
-        self.assertIsNone(_match_of(4, 4, 4), "三 ✕ 不中奖")
         self.assertIsNone(_match_of(0, 0, 2), "两同不中奖（经典三轴）")
         self.assertIsNone(_match_of(0, 1, 2))
         self.assertIsNone(_match_of(2, 0, 2))
+
+    def test_near_miss_detection(self):
+        self.assertEqual(near_miss_symbol((0, 0, 1)), _SYM_COIN, "金金钻 差一格")
+        self.assertEqual(near_miss_symbol((2, 3, 2)), _SYM_LETTER, "字♪字 差一格")
+        self.assertEqual(near_miss_symbol((3, 1, 1)), _SYM_DIAMOND, "♪钻钻 差一格")
+        self.assertIsNone(near_miss_symbol((0, 0, 0)), "三同不是近失")
+        self.assertIsNone(near_miss_symbol((0, 1, 2)), "全不同不是近失")
+        self.assertIsNone(near_miss_symbol((0, 1, 3)), "全不同不是近失")
 
     def test_triple_coin_scaling_and_fallback(self):
         hi = _StubRng(1.0)
@@ -175,13 +182,13 @@ class PureFunctionTests(unittest.TestCase):
 
     def test_cherry_left_letter(self):
         """最左轴「字」非三同：樱桃式 1 枚字母。"""
-        prizes = compute_prizes(2, 0, 4, Reward(), _StubRng())
+        prizes = compute_prizes(2, 0, 1, Reward(), _StubRng())
         self.assertEqual(len(prizes.letters), 1)
         self.assertTrue(prizes.reward.is_empty())
 
     def test_no_left_letter_no_prize(self):
         """字不在左轴且无三同 → 空。"""
-        prizes = compute_prizes(0, 2, 4, Reward(gold=5.0), _StubRng())
+        prizes = compute_prizes(0, 2, 1, Reward(gold=5.0), _StubRng())
         self.assertTrue(prizes.is_empty())
         self.assertEqual(prizes.letters, [])
         self.assertEqual(prizes.song_tokens, {})
@@ -276,30 +283,20 @@ class SlowdownTests(unittest.TestCase):
         self.assertTrue(third_has_suspense((0, 0, 9)), "金金 冲三同")
         self.assertTrue(third_has_suspense((2, 2, 9)), "字字 冲三同")
         self.assertTrue(third_has_suspense((3, 3, 9)), "♪♪ 冲三同")
-        self.assertFalse(third_has_suspense((0, 2, 9)), "金× 必不中，无悬念")
-        self.assertFalse(third_has_suspense((4, 3, 9)), "×♪ 必不中，无悬念")
-        self.assertFalse(third_has_suspense((4, 4, 9)), "×× 无悬念")
+        self.assertFalse(third_has_suspense((0, 2, 9)), "金字 必然无三同，无悬念")
         self.assertFalse(third_has_suspense((0, 1, 9)), "金钻混排无悬念")
 
-    def test_hot_symbol_covers_letter_note(self):
-        from src.ui_slot_machine import hot_symbol_for
+    def test_strip_has_no_miss_symbol(self):
+        """新条带无 ×：近失靠"两同非同"，不需要占格。"""
+        self.assertEqual(len(_REEL_STRIP), 18)
+        from collections import Counter
 
-        self.assertEqual(hot_symbol_for(_SYM_MISS, (2, 4)), _SYM_LETTER, "字× → 热符号字")
-        self.assertEqual(hot_symbol_for(_SYM_MISS, (4, 3)), _SYM_NOTE, "×♪ → 热符号♪")
-        self.assertEqual(hot_symbol_for(_SYM_MISS, (0, 0)), _SYM_COIN)
-        self.assertIsNone(hot_symbol_for(_SYM_MISS, (4, 4)), "×× 无热符号")
-        self.assertIsNone(hot_symbol_for(0, (0, 4)), "停金不适用")
-
-    def test_preferred_miss_stop_pure(self):
-        from src.ui_slot_machine import preferred_miss_stop
-
-        for start in range(len(_REEL_STRIP)):
-            step = preferred_miss_stop(_REEL_STRIP, start, _SYM_COIN)
-            self.assertIsNotNone(step)
-            idx = (start + step) % len(_REEL_STRIP)
-            self.assertEqual(_REEL_STRIP[idx], _SYM_MISS)
-            self.assertEqual(_REEL_STRIP[(idx + 1) % len(_REEL_STRIP)], _SYM_COIN)
-        self.assertIsNone(preferred_miss_stop(_REEL_STRIP, 0, None))
+        counts = Counter(_REEL_STRIP)
+        self.assertEqual(counts[_SYM_COIN], 4)
+        self.assertEqual(counts[_SYM_DIAMOND], 6)
+        self.assertEqual(counts[_SYM_LETTER], 2)
+        self.assertEqual(counts[_SYM_NOTE], 6)
+        self.assertEqual(sum(counts.values()), 18)
 
 
 class SlotMachineDialogTests(_SfxInjection):
@@ -344,8 +341,8 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg.close()
 
     def test_cherry_letter_prize_shown(self):
-        """金×× 不中奖；但 字××（最左轴字）有小奖。"""
-        dlg = _make_dialog(Reward(), result=(2, 4, 4), rng=_StubRng())
+        """字钻金（最左轴字）不中三同，但樱桃赔付给 1 枚字母。"""
+        dlg = _make_dialog(Reward(), result=(2, 1, 0), rng=_StubRng())
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
@@ -353,12 +350,11 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg._close_btn.click()
         _app.processEvents()
         self.assertEqual(len(got[0].letters), 1)
-        self.assertNotIn("near", self._sfx.calls, "有奖不播近失音")
         dlg.close()
 
     def test_two_of_a_kind_no_prize_near_miss(self):
         """两同不中奖（经典三轴），触发近失演出。"""
-        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 4))
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
@@ -400,7 +396,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg.close()
 
     def test_reject_after_reveal_awards_once(self):
-        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 4))
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
@@ -410,7 +406,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg.close()
 
     def test_close_stops_timers(self):
-        dlg = _make_dialog(Reward(), result=(0, 4, 0))
+        dlg = _make_dialog(Reward(), result=(0, 1, 0))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
         _wait_result(dlg)
@@ -552,7 +548,7 @@ class HighlightTests(_SfxInjection):
 
     def test_cherry_highlights_only_left_reel(self):
         """樱桃（最左轴字）：只有左轴亮，另外两轴不高亮。"""
-        dlg = _make_dialog(Reward(), result=(2, 4, 4), rng=_StubRng())
+        dlg = _make_dialog(Reward(), result=(2, 1, 0), rng=_StubRng())
         _wait_result(dlg)
         self.assertIsNotNone(dlg._reels[0]._flash, "樱桃应亮左轴")
         self.assertIsNone(dlg._reels[1]._flash, "未中轴不应高亮")
@@ -560,7 +556,7 @@ class HighlightTests(_SfxInjection):
         dlg.close()
 
     def test_no_prize_no_flash(self):
-        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 4))
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))
         _wait_result(dlg)
         for reel in dlg._reels:
             self.assertIsNone(reel._flash, "未中奖不应高亮")

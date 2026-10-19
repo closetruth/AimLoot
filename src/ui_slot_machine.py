@@ -40,11 +40,14 @@ _SYM_COIN = 0
 _SYM_DIAMOND = 1
 _SYM_LETTER = 2   # 字：给字母
 _SYM_NOTE = 3     # ♪：给试听券
-_SYM_MISS = 4
 
-# 每轴独立均匀取样；计数：金5 钻2 字2 ♪2 ×1（12 格）。
-# 三同金 7.2% / 三同钻·字·♪ 各 0.46%；2 个 ✕ 时"字/♪/金"停在左轴再做近失演出。
-_REEL_STRIP = (0, 0, 1, 2, 0, 3, 4, 0, 1, 2, 0, 3)
+# 每轴独立均匀取样；计数：金4 钻6 字2 ♪6（18 格，无 ×）。
+# 三同：♪/钻 各 3.7%（3 分钟/转约 57 分钟）、金 1.1%、字 0.14%。
+# 近失 = 任意两轴同号、第三轴不同（无需 × 占格）。
+_REEL_STRIP = (
+    0, 1, 3, 2, 1, 3, 0, 1, 3,
+    0, 2, 1, 3, 0, 1, 3, 1, 3,
+)
 _STRIP_LEN = len(_REEL_STRIP)
 
 _SYM_CHAR = {
@@ -52,14 +55,12 @@ _SYM_CHAR = {
     _SYM_DIAMOND: "钻",
     _SYM_LETTER: "字",
     _SYM_NOTE: "♪",
-    _SYM_MISS: "×",
 }
 _SYM_COLOR = {
     _SYM_COIN: "#f5c842",
     _SYM_DIAMOND: "#5ec8f2",
     _SYM_LETTER: "#7dcc96",   # 与宝箱稀有度"罕见"同系的绿
     _SYM_NOTE: "#c9a0ff",     # 紫
-    _SYM_MISS: "#5a5e6e",
 }
 _SYM_COLOR_Q = {k: QColor(v) for k, v in _SYM_COLOR.items()}
 
@@ -119,32 +120,32 @@ def spin_result(rng: Optional[random.Random] = None) -> Tuple[int, int, int]:
 
 
 def _match_of(s0: int, s1: int, s2: int) -> Optional[int]:
-    """经典三轴：只有三同（非 ×）才中奖，返回中奖符号；否则 None。"""
-    if s0 == s1 == s2 and s0 != _SYM_MISS:
+    """经典三轴：只有三同才中奖，返回中奖符号；否则 None。"""
+    if s0 == s1 == s2:
         return s0
     return None
 
 
 def third_has_suspense(result: Tuple[int, int, int]) -> bool:
-    """第三轴是否值得减速停：前两轴同号（且非 ✕）——第三轴真有机会凑三同。
-
-    三同制下没有两同小奖，所以 金×_ / 金钻_ 都不构成悬念（必不中），快停快揭。
-    """
+    """第三轴是否值得减速停：前两轴同号——第三轴真有机会凑三同。"""
     a, b = result[0], result[1]
-    return a == b and a != _SYM_MISS
+    return a == b
 
 
-def hot_symbol_for(last_symbol: int, prev_symbols: Tuple[int, ...]) -> Optional[int]:
-    """减速停轴时最后停的若是 ×，"热符号"应是前两轴里出现的非 × 符号。
+def near_miss_symbol(result: Tuple[int, int, int]) -> Optional[int]:
+    """近失：恰好两轴同号（非三同），返回那对符号；否则 None。
 
-    定格瞬间中心停在热符号上、上格悬着 ×，制造"差一点掉下来"的画面。
-    没有热符号（如 ×× 开局）时返回 None。
+    例：金金钻 / ♪字♪ → 差一轴就是三同。不需要专门的 × 符号。
     """
-    if last_symbol != _SYM_MISS:
+    s0, s1, s2 = result
+    if s0 == s1 == s2:
         return None
-    for sym in (_SYM_COIN, _SYM_DIAMOND, _SYM_LETTER, _SYM_NOTE):
-        if sym in prev_symbols:
-            return sym
+    if s0 == s1:
+        return s0
+    if s1 == s2:
+        return s1
+    if s0 == s2:
+        return s0
     return None
 
 
@@ -228,27 +229,6 @@ def compute_prizes(
     return prizes
 
 
-def preferred_miss_stop(
-    strip: Tuple[int, ...],
-    start: int,
-    hot: Optional[int],
-) -> Optional[int]:
-    """在 strip 中找一颗 ×，使其**正上方**显示 hot 符号（自 start 向后最近的一颗）。
-
-    屏幕上格显示 strip[idx+1]（下滚方向），所以条件是 strip[idx+1] == hot：
-    停稳后中心是 ×、上格是热符号，玩家刚看到热符号经过、又被 × 顶掉。
-    返回相对 start 的步数；找不到返回 None。
-    """
-    if hot is None:
-        return None
-    n = len(strip)
-    for step in range(1, n + 1):
-        idx = (start + step) % n
-        if strip[idx] == _SYM_MISS and strip[(idx + 1) % n] == hot:
-            return step
-    return None
-
-
 def _get_sfx():
     """从主 Application 取 SfxPlayer（测试/无主程序时返回 None）。"""
     app = QApplication.instance()
@@ -290,23 +270,15 @@ class _ReelWidget(QWidget):
         symbol: int,
         *,
         slowdown: bool = False,
-        hot: Optional[int] = None,
     ) -> None:
         """从当前 offset 往后找最近的 symbol 格作为停点（整格对齐）。
 
         slowdown=True 时阻尼减速滑行到停点。
-        hot 给定时（如最后一轴停 ×），优先选"上格是 hot"的 ×，
-        使定格画面是"热符号悬在线上一格、× 掉到线上"。
         """
         if self._stopped or self._target is not None:
             return
         self._slowdown = slowdown
         base = math.ceil(self._offset)
-        if symbol == _SYM_MISS:
-            step = preferred_miss_stop(_REEL_STRIP, base, hot)
-            if step is not None:
-                self._target = base + step
-                return
         for step in range(1, _STRIP_LEN + 1):
             if _REEL_STRIP[(base + step) % _STRIP_LEN] == symbol:
                 self._target = base + step
@@ -581,11 +553,7 @@ class SlotMachineDialog(QDialog):
         # 第三轴：结果构成悬念时减速停（链式停轴下前两轴此刻必然已停，
         # 所以按结果符号判定，而不是按"还有轴在转"）
         slowdown = i == 2 and third_has_suspense(self._result)
-        # 减速停时若停在 ×，优选"上格是热符号"的 ×，定格成"差一点掉下来"画面
-        hot = None
-        if slowdown:
-            hot = hot_symbol_for(self._result[i], tuple(self._result[:i]))
-        self._reels[i].stop_at(self._result[i], slowdown=slowdown, hot=hot)
+        self._reels[i].stop_at(self._result[i], slowdown=slowdown)
 
     def _on_reel_stopped(self) -> None:
         if self._finalized:
@@ -649,8 +617,8 @@ class SlotMachineDialog(QDialog):
         self._result_shown = True
 
     def _has_near_miss(self) -> bool:
-        """无奖但差一格：有 ✕ 且非全 ✕（换掉 ✕ 就能凑出奖）。"""
-        return 0 < self._result.count(_SYM_MISS) < 3
+        """无奖但差一格：恰好两轴同号（非三同）。"""
+        return near_miss_symbol(self._result) is not None
 
     def _prize_text(self, triple: Optional[int], prizes: SlotPrizes) -> str:
         """多行结果文案：线奖 / 字母 / 试听券。"""
@@ -686,10 +654,12 @@ class SlotMachineDialog(QDialog):
         sfx = _get_sfx()
         if sfx is not None:
             sfx.play_slot_near_miss()
-        # 未中奖时，弹出"最碍事的那些格"：优先弹 ✕，其次弹散格
-        for i, s in enumerate(self._result):
-            if s == _SYM_MISS:
-                self._reels[i].nudge(times=2)
+        # 弹出近失的那两轴（差一格就成三同的那两个同号格）
+        pair_sym = near_miss_symbol(self._result)
+        if pair_sym is not None:
+            for i, s in enumerate(self._result):
+                if s == pair_sym:
+                    self._reels[i].nudge(times=2)
         self._near_miss_label.setVisible(True)
         self._blink_left = _BLINK_TOTAL
         self._blink_timer = QTimer(self)
