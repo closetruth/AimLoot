@@ -768,7 +768,7 @@ class AppState:
         "pet_best_round": 0,
         "subtask_default_target_minutes": 10,
         "subtask_completion_bonus_gold": 0.5,
-        "idle_pause_minutes": 10,
+        "idle_pause_minutes": 5,
         "bgm_volume": 0.5,
     })
 
