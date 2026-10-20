@@ -309,7 +309,7 @@ class SlowdownTests(unittest.TestCase):
 
 class SlotMachineDialogTests(_SfxInjection):
     def test_manual_stop_stops_all_reels_and_keeps_result(self):
-        """按一次「停」：三轴立刻全部起停，中心符号仍是预设结果。"""
+        """按一次「停」：三轴依次起停，中心符号仍是预设结果。"""
         dlg = _make_dialog(Reward(), result=(1, 3, 1))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
@@ -317,11 +317,12 @@ class SlotMachineDialogTests(_SfxInjection):
         self.assertFalse(dlg._reels[0].is_stopped(), "测试前提：尚在转动")
         dlg._stop_btn.click()
         _app.processEvents()
-        for reel in dlg._reels:
-            self.assertTrue(
-                reel.is_stopping() or reel.is_stopped(),
-                "按下后所有轴都应进入停轴",
-            )
+        self.assertTrue(
+            dlg._reels[0].is_stopping(), "第一轴应立即开始停",
+        )
+        self.assertFalse(
+            dlg._reels[2].is_stopping(), "第三轴应延迟 600ms 才起停",
+        )
         _wait_result(dlg)
         self.assertEqual(
             [r.center_symbol() for r in dlg._reels], [1, 3, 1],
@@ -337,8 +338,7 @@ class SlotMachineDialogTests(_SfxInjection):
         _pump(200)
         QTest.keyClick(dlg, Qt.Key_Space)
         _app.processEvents()
-        for reel in dlg._reels:
-            self.assertTrue(reel.is_stopping() or reel.is_stopped())
+        self.assertTrue(dlg._reels[0].is_stopping())
         _wait_result(dlg)
         self.assertEqual([r.center_symbol() for r in dlg._reels], [0, 0, 0])
         dlg.close()

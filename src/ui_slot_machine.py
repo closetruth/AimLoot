@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
+from functools import partial
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
@@ -88,14 +89,16 @@ _LETTER_RARITY_COLORS = ("#c8c0b4", "#7dcc96", "#7aa2ff", "#c9a0ff", "#ffd56a")
 _TICK_MS = 16             # 60fps 连续滚动
 _SPIN_CELLS_PER_SEC = 18.0  # 匀速滚动速度（格/秒）
 _AUTO_STOP_FALLBACK_MS = 30000  # 不按「停」时的兜底：30 秒自动停轴，防止模态卡死
+_MANUAL_STOP_STAGGER_MS = 700   # 手动停轴：三轴依次落定的间隔（真机约 0.5~0.8s）
+_STOP_SLIDE_MS = 180            # 单轴从"开始停"到"落定"的滑行时长（真机 ≤190ms）
 _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
 
 # 减速停轴（阻尼式）：剩余距离从该值起开始减速，近端最慢步长
-_SLOW_ZONE_CELLS = 7.0    # 剩余几格开始进入减速区
-_SLOW_MIN_STEP = 0.06     # 减速近端每帧步长（≈260ms/格）
-_SLOW_EASE_POW = 1.6      # 减速曲线指数（越大末尾越拖）
+_SLOW_ZONE_CELLS = 12.0   # 剩余几格开始进入减速区（覆盖整圈，爬行更久）
+_SLOW_MIN_STEP = 0.03     # 减速近端每帧步长（≈530ms/格）
+_SLOW_EASE_POW = 2.0      # 减速曲线指数（越大末尾越拖）
 _NORMAL_STEP = _SPIN_CELLS_PER_SEC * _TICK_MS / 1000.0  # 匀速每帧步长
 
 _NEAR_MISS_DELAY_MS = 300  # 三轴停稳后静置节拍，再揭晓近失反馈
@@ -255,6 +258,7 @@ class _ReelWidget(QWidget):
         self._timer.setInterval(_TICK_MS)
         self._timer.timeout.connect(self._on_tick)
         self._slowdown = False       # 减速停轴演出中
+        self._stop_step = _NORMAL_STEP  # 停轴滑行步长（stop_at 时按滑行时长换算）
 
     def start_spin(self) -> None:
         self._target = None
@@ -273,16 +277,26 @@ class _ReelWidget(QWidget):
     ) -> None:
         """从当前 offset 往后找最近的 symbol 格作为停点（整格对齐）。
 
-        slowdown=True 时阻尼减速滑行到停点。
+        slowdown=True 时先爬行（减速悬念），最后快速落定。
+        否则按真机节奏：在 _STOP_SLIDE_MS 内匀速滑到停点后骤停。
         """
         if self._stopped or self._target is not None:
             return
         self._slowdown = slowdown
         base = math.ceil(self._offset)
+        target = None
         for step in range(1, _STRIP_LEN + 1):
             if _REEL_STRIP[(base + step) % _STRIP_LEN] == symbol:
-                self._target = base + step
-                return
+                target = base + step
+                break
+        if target is None:
+            return
+        self._target = target
+        if not slowdown:
+            # 真机式停轴：固定滑行时长 → 恒定步长，最后一格瞬间落定
+            distance = target - self._offset
+            ticks = max(1, int(_STOP_SLIDE_MS / _TICK_MS))
+            self._stop_step = max(distance / ticks, _NORMAL_STEP)
 
     def is_stopped(self) -> bool:
         return self._stopped
@@ -376,7 +390,10 @@ class _ReelWidget(QWidget):
             self.update()
             return
         remaining = self._target - self._offset
-        step = self._step_for_remaining(remaining) if self._slowdown else _NORMAL_STEP
+        if self._slowdown:
+            step = self._step_for_remaining(remaining)
+        else:
+            step = self._stop_step
         # 取 min 精确落格：最后一帧不吸附、不跳像素
         step = min(step, remaining)
         self._offset += step
@@ -553,9 +570,10 @@ class SlotMachineDialog(QDialog):
     # ---- 手动停轴 ----
 
     def _press_stop(self) -> None:
-        """玩家按下「停」：三轴同时开始停（结果不变，只改变滑行起点）。
+        """玩家按下「停」：三轴依次停（0 / 300 / 600ms），结果不变。
 
-        悬念场景（前两轴同号）下第三轴仍走减速滑行，保留"慢慢停"的紧张感。
+        逐轴落定让停轴过程看得清；第三轴在悬念场景下走减速滑行，
+        保留"慢慢停"的紧张感。
         """
         if self._finalized or self._result_shown:
             return
@@ -565,8 +583,22 @@ class SlotMachineDialog(QDialog):
         for i, reel in enumerate(self._reels):
             if reel.is_stopped() or reel.is_stopping():
                 continue
-            slowdown = i == 2 and third_has_suspense(self._result)
-            reel.stop_at(self._result[i], slowdown=slowdown)
+            delay = i * _MANUAL_STOP_STAGGER_MS
+            if delay <= 0:
+                self._stop_one(i)
+                continue
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(partial(self._stop_one, i))
+            timer.start(delay)
+            self._stop_timers.append(timer)
+
+    def _stop_one(self, i: int) -> None:
+        reel = self._reels[i]
+        if self._finalized or self._result_shown or reel.is_stopped() or reel.is_stopping():
+            return
+        slowdown = i == 2 and third_has_suspense(self._result)
+        reel.stop_at(self._result[i], slowdown=slowdown)
 
     # ---- 动画 ----
 
