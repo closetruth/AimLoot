@@ -142,12 +142,14 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIsNone(_match_of(2, 0, 2))
 
     def test_near_miss_detection(self):
+        """只认前两轴同号：第三轴减速慢停才有"差一点"的悬念过程。"""
         self.assertEqual(near_miss_symbol((0, 0, 1)), _SYM_COIN, "金金钻 差一格")
-        self.assertEqual(near_miss_symbol((2, 3, 2)), _SYM_LETTER, "字♪字 差一格")
-        self.assertEqual(near_miss_symbol((3, 1, 1)), _SYM_DIAMOND, "♪钻钻 差一格")
+        self.assertEqual(near_miss_symbol((3, 3, 2)), _SYM_NOTE, "♪♪字 差一格")
+        self.assertEqual(near_miss_symbol((1, 1, 0)), _SYM_DIAMOND, "钻钻金 差一格")
         self.assertIsNone(near_miss_symbol((0, 0, 0)), "三同不是近失")
         self.assertIsNone(near_miss_symbol((0, 1, 2)), "全不同不是近失")
-        self.assertIsNone(near_miss_symbol((0, 1, 3)), "全不同不是近失")
+        self.assertIsNone(near_miss_symbol((0, 1, 1)), "后两轴同号无悬念过程，不算")
+        self.assertIsNone(near_miss_symbol((0, 1, 0)), "首尾同号无悬念过程，不算")
 
     def test_triple_coin_scaling_and_fallback(self):
         hi = _StubRng(1.0)

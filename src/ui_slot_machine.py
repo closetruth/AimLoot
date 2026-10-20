@@ -133,18 +133,14 @@ def third_has_suspense(result: Tuple[int, int, int]) -> bool:
 
 
 def near_miss_symbol(result: Tuple[int, int, int]) -> Optional[int]:
-    """近失：恰好两轴同号（非三同），返回那对符号；否则 None。
+    """近失：前两轴同号、第三轴不同（非三同），返回那对符号；否则 None。
 
-    例：金金钻 / ♪字♪ → 差一轴就是三同。不需要专门的 × 符号。
+    只认前两轴：第三轴减速慢停时观众已经为"差一格"绷紧，此时才揭晓近失
+    才成立。后两轴/首尾同号没有这个悬念过程，不做近失演出
+    （任意两同约 59%，只取前两轴约 20%，接近近失研究的最优区间）。
     """
     s0, s1, s2 = result
-    if s0 == s1 == s2:
-        return None
-    if s0 == s1:
-        return s0
-    if s1 == s2:
-        return s1
-    if s0 == s2:
+    if s0 == s1 and s2 != s0:
         return s0
     return None
 
