@@ -51,9 +51,10 @@ _SYM_NOTE = 3     # ♪：给试听券
 # 每轴独立均匀取样；计数：金4 钻6 字2 ♪6（18 格，无 ×）。
 # 三同：♪/钻 各 3.7%（3 分钟/转约 57 分钟）、金 1.1%、字 0.14%。
 # 近失 = 任意两轴同号、第三轴不同（无需 × 占格）。
+# 排列经过搜索：96% 的近失组合都能让热符号挂在赔付线上方（擦线而过）。
 _REEL_STRIP = (
-    0, 1, 3, 2, 1, 3, 0, 1, 3,
-    0, 2, 1, 3, 0, 1, 3, 1, 3,
+    0, 0, 3, 0, 1, 3, 1, 1, 1,
+    0, 3, 2, 3, 3, 1, 2, 1, 3,
 )
 _STRIP_LEN = len(_REEL_STRIP)
 
@@ -274,21 +275,34 @@ class _ReelWidget(QWidget):
         symbol: int,
         *,
         slowdown: bool = False,
+        graze: Optional[int] = None,
     ) -> None:
         """从当前 offset 往后找最近的 symbol 格作为停点（整格对齐）。
 
         slowdown=True 时先爬行（减速悬念），最后快速落定。
         否则按真机节奏：在 _STOP_SLIDE_MS 内匀速滑到停点后骤停。
+        graze 给定且 symbol 不是 graze 时，优先选一格使 graze 显示在赔付线
+        正上方（屏幕上格 = strip[offset+1]）——真机的"擦线而过"近失画面。
         """
         if self._stopped or self._target is not None:
             return
         self._slowdown = slowdown
         base = math.ceil(self._offset)
         target = None
-        for step in range(1, _STRIP_LEN + 1):
-            if _REEL_STRIP[(base + step) % _STRIP_LEN] == symbol:
-                target = base + step
-                break
+        if graze is not None and graze != symbol:
+            for step in range(1, _STRIP_LEN + 1):
+                idx = (base + step) % _STRIP_LEN
+                if (
+                    _REEL_STRIP[idx] == symbol
+                    and _REEL_STRIP[(idx + 1) % _STRIP_LEN] == graze
+                ):
+                    target = base + step
+                    break
+        if target is None:
+            for step in range(1, _STRIP_LEN + 1):
+                if _REEL_STRIP[(base + step) % _STRIP_LEN] == symbol:
+                    target = base + step
+                    break
         if target is None:
             return
         self._target = target
@@ -598,7 +612,11 @@ class SlotMachineDialog(QDialog):
         if self._finalized or self._result_shown or reel.is_stopped() or reel.is_stopping():
             return
         slowdown = i == 2 and third_has_suspense(self._result)
-        reel.stop_at(self._result[i], slowdown=slowdown)
+        # 真机式近失：第三轴停稳时让"差一格的符号"挂在赔付线上方（擦线而过）
+        graze = None
+        if i == 2:
+            graze = near_miss_symbol(self._result)
+        reel.stop_at(self._result[i], slowdown=slowdown, graze=graze)
 
     # ---- 动画 ----
 

@@ -254,16 +254,19 @@ class ReelDirectionTests(unittest.TestCase):
 class SlowdownTests(unittest.TestCase):
     """减速停轴：阻尼式步长收缩（连续滑行）。"""
 
-    def test_normal_stop_keeps_constant_step(self):
-        from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
+    def test_normal_stop_uses_slide_step(self):
+        """非减速停轴：按固定滑行时长（180ms）换算步长，快速落定。"""
+        from src.ui_slot_machine import _ReelWidget
 
         reel = _ReelWidget()
         reel._offset = 0.0
         reel.start_spin()
         reel.stop_at(1)
+        slide_step = reel._stop_step
         start = reel._offset
         reel._on_tick()
-        self.assertAlmostEqual(reel._offset - start, _NORMAL_STEP)
+        self.assertAlmostEqual(reel._offset - start, slide_step, places=6)
+        self.assertGreater(slide_step, 0)
 
     def test_slowdown_shrinks_step_near_target(self):
         from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
@@ -380,6 +383,35 @@ class SlotMachineDialogTests(_SfxInjection):
         self.assertTrue(dlg._stop_timers, "应有兜底计时器")
         self.assertTrue(any(t.isActive() for t in dlg._stop_timers))
         dlg.close()
+
+    def test_near_miss_grazes_payline(self):
+        """真机式近失：第三轴停稳时热符号挂在赔付线正上方（擦线而过）。"""
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))  # 金金钻
+        _stop_and_wait(dlg)
+        reel = dlg._reels[2]
+        idx = int(reel._offset) % len(_REEL_STRIP)
+        center = _REEL_STRIP[idx]
+        above = _REEL_STRIP[(idx + 1) % len(_REEL_STRIP)]
+        self.assertEqual(center, _SYM_DIAMOND, "第三轴停在预设结果")
+        self.assertEqual(above, _SYM_COIN, "热符号（金）应挂在赔付线上方")
+        dlg.close()
+
+    def test_strip_covers_most_graze_combos(self):
+        """条带排列应覆盖绝大多数"某符号上方是热符号"的近失画面。"""
+        n = len(_REEL_STRIP)
+        avail = {
+            (sym, graze): any(
+                _REEL_STRIP[i] == sym and _REEL_STRIP[(i + 1) % n] == graze
+                for i in range(n)
+            )
+            for sym in (0, 1, 2, 3)
+            for graze in (0, 1, 2, 3)
+            if sym != graze
+        }
+        covered = sum(1 for v in avail.values() if v)
+        self.assertGreaterEqual(
+            covered, 10, f"擦线组合覆盖不足：{covered}/12"
+        )
 
     def test_triple_coin_awards_once(self):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
