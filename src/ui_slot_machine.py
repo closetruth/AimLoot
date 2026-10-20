@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from functools import partial
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
@@ -34,6 +33,13 @@ SLOT_QSS = DARK_BASE_QSS + f"""
 QLabel#SlotTitle {{ font-size: 16px; font-weight: 600; }}
 QLabel#SlotSub {{ color: {TEXT_MUTED}; font-size: 12px; }}
 QLabel#SlotResult {{ font-size: 14px; font-weight: 600; min-height: 40px; }}
+QPushButton#StopBtn {{
+    background-color: #2b2f3d;
+    border-color: #4a5068;
+    color: #ffd56a;
+}}
+QPushButton#StopBtn:hover {{ background-color: #3a3f52; border-color: #6a7390; }}
+QPushButton#StopBtn:disabled {{ color: #5a5e6e; border-color: #2a2d38; }}
 """
 
 _SYM_COIN = 0
@@ -81,9 +87,7 @@ _LETTER_RARITY_COLORS = ("#c8c0b4", "#7dcc96", "#7aa2ff", "#c9a0ff", "#ffd56a")
 
 _TICK_MS = 16             # 60fps 连续滚动
 _SPIN_CELLS_PER_SEC = 18.0  # 匀速滚动速度（格/秒）
-_STOP_START_MS = 600      # 第一轴开始停的时间
-_STOP_STAGGER_MS = 200    # 相邻两轴开始停的间隔（链式停轴，上一轴停稳后延迟）
-_SLOW_LEAD_MS = 820       # 第三轴减速演出前多转一会儿（阻尼滑行区更从容）
+_AUTO_STOP_FALLBACK_MS = 30000  # 不按「停」时的兜底：30 秒自动停轴，防止模态卡死
 _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
@@ -282,6 +286,10 @@ class _ReelWidget(QWidget):
 
     def is_stopped(self) -> bool:
         return self._stopped
+
+    def is_stopping(self) -> bool:
+        """已设停点、正在滑行但尚未停稳。"""
+        return (not self._stopped) and self._target is not None
 
     def center_symbol(self) -> int:
         return _REEL_STRIP[int(self._offset) % _STRIP_LEN]
@@ -523,11 +531,42 @@ class SlotMachineDialog(QDialog):
         )
         self._near_miss_label.setVisible(False)
         layout.addWidget(self._near_miss_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        btn_row.addStretch(1)
+        self._stop_btn = QPushButton("停", self)
+        self._stop_btn.setObjectName("StopBtn")
+        self._stop_btn.setToolTip("手动停轴（空格）")
+        self._stop_btn.setFixedWidth(72)
+        self._stop_btn.setFocusPolicy(Qt.NoFocus)
+        self._stop_btn.clicked.connect(self._press_stop)
+        btn_row.addWidget(self._stop_btn)
         self._close_btn = QPushButton("收下", self)
         self._close_btn.setObjectName("Primary")
         self._close_btn.clicked.connect(self.accept)
         self._close_btn.setEnabled(False)
-        layout.addWidget(self._close_btn, alignment=Qt.AlignCenter)
+        btn_row.addWidget(self._close_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+    # ---- 手动停轴 ----
+
+    def _press_stop(self) -> None:
+        """玩家按下「停」：三轴同时开始停（结果不变，只改变滑行起点）。
+
+        悬念场景（前两轴同号）下第三轴仍走减速滑行，保留"慢慢停"的紧张感。
+        """
+        if self._finalized or self._result_shown:
+            return
+        for timer in self._stop_timers:
+            timer.stop()
+        self._stop_timers.clear()
+        for i, reel in enumerate(self._reels):
+            if reel.is_stopped() or reel.is_stopping():
+                continue
+            slowdown = i == 2 and third_has_suspense(self._result)
+            reel.stop_at(self._result[i], slowdown=slowdown)
 
     # ---- 动画 ----
 
@@ -539,17 +578,13 @@ class SlotMachineDialog(QDialog):
             reel.start_spin()
         self._stopped_count = 0
         self._stop_timers.clear()
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(partial(self._stop_reel, 0))
-        timer.start(_STOP_START_MS)
-        self._stop_timers.append(timer)
-
-    def _stop_reel(self, i: int) -> None:
-        # 第三轴：结果构成悬念时减速停（链式停轴下前两轴此刻必然已停，
-        # 所以按结果符号判定，而不是按"还有轴在转"）
-        slowdown = i == 2 and third_has_suspense(self._result)
-        self._reels[i].stop_at(self._result[i], slowdown=slowdown)
+        # 不自动停轴：等玩家按「停」/空格；超过兜底时长仍未按则自动停，
+        # 防止模态弹窗无限卡住主界面。
+        fallback = QTimer(self)
+        fallback.setSingleShot(True)
+        fallback.timeout.connect(self._press_stop)
+        fallback.start(_AUTO_STOP_FALLBACK_MS)
+        self._stop_timers.append(fallback)
 
     def _on_reel_stopped(self) -> None:
         if self._finalized:
@@ -563,18 +598,6 @@ class SlotMachineDialog(QDialog):
                 sfx.stop_slot_spin()
             if not self._result_shown:
                 self._on_all_stopped()
-            return
-        # 链式停轴：上一轴停稳后隔一小段再让下一轴起停，保证左→右顺序。
-        # 第三轴走减速演出时留更长的自由转时间，阻尼滑行区更从容。
-        next_index = self._stopped_count
-        delay = _STOP_STAGGER_MS
-        if next_index == 2 and third_has_suspense(self._result):
-            delay = _SLOW_LEAD_MS
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(partial(self._stop_reel, next_index))
-        timer.start(delay)
-        self._stop_timers.append(timer)
 
     def _on_all_stopped(self) -> None:
         if self._finalized or self._result_shown:
@@ -608,6 +631,7 @@ class SlotMachineDialog(QDialog):
         self._result_label.setStyleSheet(
             f"color: {color}; font-size: 14px; font-weight: 600;"
         )
+        self._stop_btn.setEnabled(False)
         self._close_btn.setEnabled(True)
         self._close_btn.setFocus()
         self._result_shown = True
@@ -720,6 +744,9 @@ class SlotMachineDialog(QDialog):
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
             self.reject()
+            return
+        if event.key() == Qt.Key_Space:
+            self._press_stop()
             return
         super().keyPressEvent(event)
 

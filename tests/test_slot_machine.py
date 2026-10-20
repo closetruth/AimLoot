@@ -129,6 +129,12 @@ def _wait_result(dlg: SlotMachineDialog, timeout_ms: int = 12000) -> None:
         waited += 100
 
 
+def _stop_and_wait(dlg: SlotMachineDialog, timeout_ms: int = 12000) -> None:
+    """按下停轴再等揭晓（默认不自动停，测试需要主动触发）。"""
+    dlg._press_stop()
+    _wait_result(dlg, timeout_ms)
+
+
 class PureFunctionTests(unittest.TestCase):
     """纯函数：三同判定 / 奖励计算 / 取样。"""
 
@@ -302,11 +308,84 @@ class SlowdownTests(unittest.TestCase):
 
 
 class SlotMachineDialogTests(_SfxInjection):
+    def test_manual_stop_stops_all_reels_and_keeps_result(self):
+        """按一次「停」：三轴立刻全部起停，中心符号仍是预设结果。"""
+        dlg = _make_dialog(Reward(), result=(1, 3, 1))
+        got: list[SlotPrizes] = []
+        dlg.prize_decided.connect(got.append)
+        _pump(200)
+        self.assertFalse(dlg._reels[0].is_stopped(), "测试前提：尚在转动")
+        dlg._stop_btn.click()
+        _app.processEvents()
+        for reel in dlg._reels:
+            self.assertTrue(
+                reel.is_stopping() or reel.is_stopped(),
+                "按下后所有轴都应进入停轴",
+            )
+        _wait_result(dlg)
+        self.assertEqual(
+            [r.center_symbol() for r in dlg._reels], [1, 3, 1],
+            "手动停轴不得改变结果",
+        )
+        dlg._close_btn.click()
+        _app.processEvents()
+        self.assertEqual(len(got), 1)
+        dlg.close()
+
+    def test_manual_stop_via_space_key(self):
+        dlg = _make_dialog(Reward(), result=(0, 0, 0))
+        _pump(200)
+        QTest.keyClick(dlg, Qt.Key_Space)
+        _app.processEvents()
+        for reel in dlg._reels:
+            self.assertTrue(reel.is_stopping() or reel.is_stopped())
+        _wait_result(dlg)
+        self.assertEqual([r.center_symbol() for r in dlg._reels], [0, 0, 0])
+        dlg.close()
+
+    def test_manual_stop_disabled_after_reveal(self):
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
+        _stop_and_wait(dlg)
+        self.assertFalse(dlg._stop_btn.isEnabled(), "揭晓后停轴按钮应禁用")
+        dlg._press_stop()  # 直接调用也不应改变任何状态
+        self.assertTrue(dlg._result_shown)
+        dlg.close()
+
+    def test_manual_stop_twice_is_safe(self):
+        """连按两次不应报错或改变结果。"""
+        dlg = _make_dialog(Reward(), result=(1, 1, 0))
+        _pump(200)
+        dlg._press_stop()
+        dlg._press_stop()
+        _app.processEvents()
+        _stop_and_wait(dlg)
+        self.assertEqual([r.center_symbol() for r in dlg._reels], [1, 1, 0])
+        dlg.close()
+
+    def test_no_auto_stop_without_press(self):
+        """不按「停」就不揭晓（兜底 30 秒，测试只等 2.5 秒）。"""
+        dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
+        _pump(2500)
+        self.assertFalse(dlg._result_shown, "未按停时不应自动揭晓")
+        self.assertFalse(dlg._close_btn.isEnabled())
+        for reel in dlg._reels:
+            self.assertFalse(reel.is_stopped(), "三轴应持续转动")
+        _stop_and_wait(dlg)
+        self.assertTrue(dlg._result_shown, "按下停轴后应揭晓")
+        dlg.close()
+
+    def test_fallback_timer_is_armed(self):
+        """兜底 30 秒计时器已挂上，防止模态窗无限卡住。"""
+        dlg = _make_dialog(Reward(), result=(0, 0, 0))
+        self.assertTrue(dlg._stop_timers, "应有兜底计时器")
+        self.assertTrue(any(t.isActive() for t in dlg._stop_timers))
+        dlg.close()
+
     def test_triple_coin_awards_once(self):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         self.assertTrue(dlg._result_shown)
         self.assertTrue(dlg._close_btn.isEnabled())
         dlg._close_btn.click()
@@ -322,7 +401,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg = _make_dialog(Reward(), result=(2, 2, 2), rng=_StubRng())
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         self.assertIn("三同字", dlg._result_label.text())
         dlg._close_btn.click()
         _app.processEvents()
@@ -335,7 +414,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg = _make_dialog(Reward(), result=(3, 3, 3), rng=_StubRng())
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         self.assertIn("三同♪", dlg._result_label.text())
         dlg._close_btn.click()
         _app.processEvents()
@@ -347,7 +426,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg = _make_dialog(Reward(), result=(2, 1, 0), rng=_StubRng())
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         self.assertIn("字母", dlg._result_label.text())
         dlg._close_btn.click()
         _app.processEvents()
@@ -359,7 +438,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         self.assertNotIn("near", self._sfx.calls, "揭晓前不应立刻播近失音")
         self.assertFalse(dlg._near_miss_label.isVisible())
         _pump(500)
@@ -401,7 +480,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         dlg.reject()
         self.assertEqual(len(got), 1, "揭晓后 Esc 必须结算奖励")
         self.assertAlmostEqual(got[0].reward.gold, dlg.prizes().reward.gold)
@@ -411,7 +490,7 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg = _make_dialog(Reward(), result=(0, 1, 0))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         dlg.close()
         _app.processEvents()
         self.assertTrue(dlg._finalized)
@@ -424,7 +503,7 @@ class SlotMachineDialogTests(_SfxInjection):
 
     def test_spin_sfx_plays_reel_ticks_and_win(self):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         self.assertEqual(self._sfx.calls[0], "spin")
         self.assertEqual(self._sfx.calls.count("reel"), 3)
         self.assertIn("win", self._sfx.calls)
@@ -543,7 +622,7 @@ class HighlightTests(_SfxInjection):
 
     def test_triple_highlights_all_three_reels(self):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 0))
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         for reel in dlg._reels:
             self.assertIsNotNone(reel._flash, "三同格应设高亮色")
         dlg.close()
@@ -551,7 +630,7 @@ class HighlightTests(_SfxInjection):
     def test_cherry_highlights_only_left_reel(self):
         """樱桃（最左轴字）：只有左轴亮，另外两轴不高亮。"""
         dlg = _make_dialog(Reward(), result=(2, 1, 0), rng=_StubRng())
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         self.assertIsNotNone(dlg._reels[0]._flash, "樱桃应亮左轴")
         self.assertIsNone(dlg._reels[1]._flash, "未中轴不应高亮")
         self.assertIsNone(dlg._reels[2]._flash)
@@ -559,7 +638,7 @@ class HighlightTests(_SfxInjection):
 
     def test_no_prize_no_flash(self):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))
-        _wait_result(dlg)
+        _stop_and_wait(dlg)
         for reel in dlg._reels:
             self.assertIsNone(reel._flash, "未中奖不应高亮")
         dlg.close()
