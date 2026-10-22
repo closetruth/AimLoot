@@ -48,15 +48,38 @@ _SYM_DIAMOND = 1
 _SYM_LETTER = 2   # 字：给字母
 _SYM_NOTE = 3     # ♪：给试听券
 
-# 每轴独立均匀取样；计数：金4 钻6 字2 ♪6（18 格，无 ×）。
-# 三同：♪/钻 各 3.7%（3 分钟/转约 57 分钟）、金 1.1%、字 0.14%。
-# 近失 = 任意两轴同号、第三轴不同（无需 × 占格）。
-# 排列经过搜索：96% 的近失组合都能让热符号挂在赔付线上方（擦线而过）。
-_REEL_STRIP = (
-    0, 0, 3, 0, 1, 3, 1, 1, 1,
-    0, 3, 2, 3, 3, 1, 2, 1, 3,
+# ── 物理带（22格，3轴共用，玩家看到的滚动画面）──
+# 近失邻接：每个金/字两侧都是钻或♪（高频符号），擦线而过效果最大化。
+# 金5(22.7%) 钻7(31.8%) 字3(13.6%) ♪7(31.8%)
+_PHYSICAL_STRIP = (
+    0, 1, 3, 2, 1, 0, 3, 1, 3, 0,
+    1, 3, 0, 1, 2, 3, 1, 0, 3, 1,
+    2, 3,
 )
-_STRIP_LEN = len(_REEL_STRIP)
+_PHYSICAL_LEN = len(_PHYSICAL_STRIP)
+
+# ── 虚拟带（72格×3轴，RNG取样源，决定真实停轴概率）──
+# 轴1: 金22 钻24 字6 ♪20  →  P(金)30.6% P(钻)33.3% P(字)8.3% P(♪)27.8%
+# 轴2: 金16 钻22 字4 ♪30  →  P(金)22.2% P(钻)30.6% P(字)5.6% P(♪)41.7%
+# 轴3: 金6  钻18 字2 ♪46  →  P(金)8.3%  P(钻)25.0% P(字)2.8% P(♪)63.9%
+# 三同概率：金0.57% 钻2.55% 字0.013% ♪7.40%  合计~10.5%
+# ♪♪♪最频繁→LDW持续小胜感；金/字极稀有→中了更兴奋
+# 第三轴金仅8.3%→"差一格就三同金"的近失感更强（虚拟转轮欺骗性）
+_VIRTUAL_STRIPS = (
+    (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+     2,2,2,2,2,2,
+     3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3),
+    (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+     2,2,2,2,
+     3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3),
+    (0,0,0,0,0,0,
+     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+     2,2,
+     3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3),
+)
+_VIRTUAL_LENS = tuple(len(s) for s in _VIRTUAL_STRIPS)
 
 _SYM_CHAR = {
     _SYM_COIN: "金",
@@ -122,9 +145,13 @@ def _blend(a: QColor, b: QColor, t: float) -> QColor:
 
 
 def spin_result(rng: Optional[random.Random] = None) -> Tuple[int, int, int]:
-    """三轴各自独立从 _REEL_STRIP 均匀取样。"""
+    """三轴各自从对应的虚拟带均匀取样（虚拟转轮映射）。"""
     r = rng if rng is not None else random.Random()
-    return (r.choice(_REEL_STRIP), r.choice(_REEL_STRIP), r.choice(_REEL_STRIP))
+    return (
+        r.choice(_VIRTUAL_STRIPS[0]),
+        r.choice(_VIRTUAL_STRIPS[1]),
+        r.choice(_VIRTUAL_STRIPS[2]),
+    )
 
 
 def _match_of(s0: int, s1: int, s2: int) -> Optional[int]:
@@ -151,6 +178,27 @@ def near_miss_symbol(result: Tuple[int, int, int]) -> Optional[int]:
     if s0 == s1 and s2 != s0:
         return s0
     return None
+
+
+def triple_probabilities() -> dict[int, float]:
+    """各三同事件的真实概率（从虚拟带计算）。"""
+    probs: dict[int, float] = {}
+    for sym in range(4):
+        p = 1.0
+        for reel_idx in range(3):
+            strip = _VIRTUAL_STRIPS[reel_idx]
+            p *= sum(1 for s in strip if s == sym) / len(strip)
+        probs[sym] = p
+    return probs
+
+
+def physical_strip_probabilities() -> dict[int, float]:
+    """物理带各符号的显示概率（玩家直觉依据）。"""
+    total = _PHYSICAL_LEN
+    return {
+        sym: sum(1 for s in _PHYSICAL_STRIP if s == sym) / total
+        for sym in range(4)
+    }
 
 
 @dataclass
@@ -247,7 +295,7 @@ class _ReelWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(_REEL_W, _REEL_H)
-        self._offset = float(random.randrange(_STRIP_LEN))
+        self._offset = float(random.randrange(_PHYSICAL_LEN))
         self._target: Optional[float] = None
         self._stopped = True
         self._flash: Optional[str] = None
@@ -290,17 +338,17 @@ class _ReelWidget(QWidget):
         base = math.ceil(self._offset)
         target = None
         if graze is not None and graze != symbol:
-            for step in range(1, _STRIP_LEN + 1):
-                idx = (base + step) % _STRIP_LEN
+            for step in range(1, _PHYSICAL_LEN + 1):
+                idx = (base + step) % _PHYSICAL_LEN
                 if (
-                    _REEL_STRIP[idx] == symbol
-                    and _REEL_STRIP[(idx + 1) % _STRIP_LEN] == graze
+                    _PHYSICAL_STRIP[idx] == symbol
+                    and _PHYSICAL_STRIP[(idx + 1) % _PHYSICAL_LEN] == graze
                 ):
                     target = base + step
                     break
         if target is None:
-            for step in range(1, _STRIP_LEN + 1):
-                if _REEL_STRIP[(base + step) % _STRIP_LEN] == symbol:
+            for step in range(1, _PHYSICAL_LEN + 1):
+                if _PHYSICAL_STRIP[(base + step) % _PHYSICAL_LEN] == symbol:
                     target = base + step
                     break
         if target is None:
@@ -320,7 +368,7 @@ class _ReelWidget(QWidget):
         return (not self._stopped) and self._target is not None
 
     def center_symbol(self) -> int:
-        return _REEL_STRIP[int(self._offset) % _STRIP_LEN]
+        return _PHYSICAL_STRIP[int(self._offset) % _PHYSICAL_LEN]
 
     def _symbol_at(self, row: int) -> int:
         """符号带取样：row -1=上格 / 0=中心 / 1=下格。
@@ -328,7 +376,7 @@ class _ReelWidget(QWidget):
         offset 递增时上格符号下一帧落到中心 → 整体自上而下流动（向下滚），
         与近失 nudge 的向下回弹、"掉金币"直觉一致。
         """
-        return _REEL_STRIP[(int(self._offset) - row) % _STRIP_LEN]
+        return _PHYSICAL_STRIP[(int(self._offset) - row) % _PHYSICAL_LEN]
 
     def set_flash(self, color: Optional[str]) -> None:
         """中奖高亮：中线格边框渐亮为给定颜色；None 熄灭。"""

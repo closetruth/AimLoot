@@ -23,7 +23,10 @@ from src.ui_slot_machine import (
     SlotMachineDialog,
     SlotPrizes,
     _match_of,
-    _REEL_STRIP,
+    _PHYSICAL_STRIP,
+    _PHYSICAL_LEN,
+    _VIRTUAL_STRIPS,
+    _VIRTUAL_LENS,
     _SYM_COIN,
     _SYM_DIAMOND,
     _SYM_LETTER,
@@ -31,6 +34,8 @@ from src.ui_slot_machine import (
     compute_prizes,
     near_miss_symbol,
     spin_result,
+    triple_probabilities,
+    physical_strip_probabilities,
 )
 
 _app = QApplication.instance() or QApplication([])
@@ -217,11 +222,11 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(inv.song_token_count("The Dawn"), 2)
 
     def test_spin_result_membership(self):
-        strip = set(_REEL_STRIP)
+        all_syms = set(_PHYSICAL_STRIP)
         for _ in range(200):
             result = spin_result()
             self.assertEqual(len(result), 3)
-            self.assertTrue(all(s in strip for s in result))
+            self.assertTrue(all(s in all_syms for s in result))
 
 
 class ReelDirectionTests(unittest.TestCase):
@@ -297,17 +302,46 @@ class SlowdownTests(unittest.TestCase):
         self.assertFalse(third_has_suspense((0, 2, 9)), "金字 必然无三同，无悬念")
         self.assertFalse(third_has_suspense((0, 1, 9)), "金钻混排无悬念")
 
-    def test_strip_has_no_miss_symbol(self):
-        """新条带无 ×：近失靠"两同非同"，不需要占格。"""
-        self.assertEqual(len(_REEL_STRIP), 18)
+    def test_physical_strip_layout(self):
+        """物理带22格，近失邻接：金/字两侧必须是钻或♪。"""
+        self.assertEqual(_PHYSICAL_LEN, 22)
         from collections import Counter
+        counts = Counter(_PHYSICAL_STRIP)
+        self.assertEqual(counts[_SYM_COIN], 5)
+        self.assertEqual(counts[_SYM_DIAMOND], 7)
+        self.assertEqual(counts[_SYM_LETTER], 3)
+        self.assertEqual(counts[_SYM_NOTE], 7)
+        high_freq = {_SYM_DIAMOND, _SYM_NOTE}
+        for i, sym in enumerate(_PHYSICAL_STRIP):
+            if sym in (_SYM_COIN, _SYM_LETTER):
+                above = _PHYSICAL_STRIP[(i - 1) % _PHYSICAL_LEN]
+                below = _PHYSICAL_STRIP[(i + 1) % _PHYSICAL_LEN]
+                self.assertIn(above, high_freq,
+                              f"位置{i}的{sym}上方应为高频符号，实际{above}")
+                self.assertIn(below, high_freq,
+                              f"位置{i}的{sym}下方应为高频符号，实际{below}")
 
-        counts = Counter(_REEL_STRIP)
-        self.assertEqual(counts[_SYM_COIN], 4)
-        self.assertEqual(counts[_SYM_DIAMOND], 6)
-        self.assertEqual(counts[_SYM_LETTER], 2)
-        self.assertEqual(counts[_SYM_NOTE], 6)
-        self.assertEqual(sum(counts.values()), 18)
+    def test_virtual_strip_symbol_consistency(self):
+        """虚拟带中的符号必须是物理带中存在的符号。"""
+        physical_syms = set(_PHYSICAL_STRIP)
+        for reel_idx, vstrip in enumerate(_VIRTUAL_STRIPS):
+            for sym in vstrip:
+                self.assertIn(sym, physical_syms)
+
+    def test_triple_probabilities_sum(self):
+        """三同概率合计约10.5%。"""
+        probs = triple_probabilities()
+        total = sum(probs.values())
+        self.assertAlmostEqual(total, 0.1052, places=2)
+
+    def test_physical_vs_virtual_deception(self):
+        """虚拟带第三轴金概率远低于物理带显示概率（欺骗性）。"""
+        phys = physical_strip_probabilities()
+        self.assertAlmostEqual(phys[_SYM_COIN], 5 / 22, places=2)
+        v3_coin = sum(1 for s in _VIRTUAL_STRIPS[2] if s == _SYM_COIN) / len(_VIRTUAL_STRIPS[2])
+        self.assertAlmostEqual(v3_coin, 6 / 72, places=2)
+        self.assertLess(v3_coin, phys[_SYM_COIN],
+                        "第三轴金概率应低于物理带显示概率")
 
 
 class SlotMachineDialogTests(_SfxInjection):
@@ -389,19 +423,19 @@ class SlotMachineDialogTests(_SfxInjection):
         dlg = _make_dialog(Reward(gold=1.0), result=(0, 0, 1))  # 金金钻
         _stop_and_wait(dlg)
         reel = dlg._reels[2]
-        idx = int(reel._offset) % len(_REEL_STRIP)
-        center = _REEL_STRIP[idx]
-        above = _REEL_STRIP[(idx + 1) % len(_REEL_STRIP)]
+        idx = int(reel._offset) % _PHYSICAL_LEN
+        center = _PHYSICAL_STRIP[idx]
+        above = _PHYSICAL_STRIP[(idx + 1) % _PHYSICAL_LEN]
         self.assertEqual(center, _SYM_DIAMOND, "第三轴停在预设结果")
         self.assertEqual(above, _SYM_COIN, "热符号（金）应挂在赔付线上方")
         dlg.close()
 
-    def test_strip_covers_most_graze_combos(self):
-        """条带排列应覆盖绝大多数"某符号上方是热符号"的近失画面。"""
-        n = len(_REEL_STRIP)
+    def test_physical_strip_covers_most_graze_combos(self):
+        """物理带排列应覆盖绝大多数"某符号上方是热符号"的近失画面。"""
+        n = _PHYSICAL_LEN
         avail = {
             (sym, graze): any(
-                _REEL_STRIP[i] == sym and _REEL_STRIP[(i + 1) % n] == graze
+                _PHYSICAL_STRIP[i] == sym and _PHYSICAL_STRIP[(i + 1) % n] == graze
                 for i in range(n)
             )
             for sym in (0, 1, 2, 3)
