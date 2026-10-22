@@ -93,15 +93,47 @@ def _near(dur: float = 0.32) -> bytes:
         t = i / SR
         idx = min(int(t / note_len), len(notes) - 1)
         f = notes[idx]
-        # 每个音符后部轻微下滑（叹息感）
         note_t = (t % note_len) / note_len
         f *= 1.0 - 0.03 * note_t
         v = math.sin(2 * math.pi * f * t) * 0.5
         v += math.sin(2 * math.pi * f * 2 * t) * 0.15
-        # 全句淡入，末尾淡出
         a = _env(t, 0.02, dur)
         v *= a
         out += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 24000))
+    return bytes(out)
+
+
+def _near_high(dur: float = 0.45) -> bytes:
+    """强近失音（♪/钻）：低频冲击 + 上行半音 + 叹息下滑，冲击感更强。"""
+    notes = [523.25, 659.25, 783.99]
+    n = int(SR * dur)
+    out = bytearray()
+    note_len = dur / len(notes)
+    for i in range(n):
+        t = i / SR
+        idx = min(int(t / note_len), len(notes) - 1)
+        f = notes[idx]
+        note_t = (t % note_len) / note_len
+        f *= 1.0 - 0.04 * note_t
+        impact = math.sin(2 * math.pi * 80 * t) * math.exp(-t * 6.0) * 0.35
+        melody = math.sin(2 * math.pi * f * t) * 0.45
+        melody += math.sin(2 * math.pi * f * 2 * t) * 0.12
+        a = _env(t, 0.01, dur)
+        v = impact + melody * a
+        out += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 26000))
+    return bytes(out)
+
+
+def _near_low(dur: float = 0.15) -> bytes:
+    """弱近失音（字）：简短轻柔单音 E5，快速衰减。"""
+    f = 659.25
+    n = int(SR * dur)
+    out = bytearray()
+    for i in range(n):
+        t = i / SR
+        v = math.sin(2 * math.pi * f * t) * 0.3
+        v *= math.exp(-t * 10.0)
+        out += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 20000))
     return bytes(out)
 
 
@@ -122,7 +154,9 @@ if __name__ == "__main__":
     os.makedirs(sounds, exist_ok=True)
     _write(os.path.join(sounds, "reel_stop.wav"), _tick())
     _write(os.path.join(sounds, "near_miss.wav"), _near())
+    _write(os.path.join(sounds, "near_miss_high.wav"), _near_high())
+    _write(os.path.join(sounds, "near_miss_low.wav"), _near_low())
     _write(os.path.join(sounds, "slot_win.wav"), _win())
     _write(os.path.join(sounds, "slot_spin.wav"), _spin())
-    print("written: reel_stop.wav, near_miss.wav, slot_win.wav, slot_spin.wav")
+    print("written: reel_stop.wav, near_miss.wav, near_miss_high.wav, near_miss_low.wav, slot_win.wav, slot_spin.wav")
     sys.exit(0)

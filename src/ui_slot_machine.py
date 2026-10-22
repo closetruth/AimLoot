@@ -125,13 +125,50 @@ _SLOW_MIN_STEP = 0.03     # 减速近端每帧步长（≈530ms/格）
 _SLOW_EASE_POW = 2.0      # 减速曲线指数（越大末尾越拖）
 _NORMAL_STEP = _SPIN_CELLS_PER_SEC * _TICK_MS / 1000.0  # 匀速每帧步长
 
-_NEAR_MISS_DELAY_MS = 300  # 三轴停稳后静置节拍，再揭晓近失反馈
-_NUDGE_H = 7               # 近失回弹位移（中心行向下再弹回）
-_BLINK_MS = 400            # 近失标签闪烁周期
-_BLINK_TOTAL = 5           # 闪烁次数（约 2 秒后定格）
-_NEAR_MISS_COLOR = "#ff9f43"  # 与 ui_text._TOAST_CRIT 一致的橙
-_FLASH_RISE_MS = 150       # 中奖高亮渐亮时长（缓入"啪"点亮）
-_FLASH_GLOW = 0.14         # 中线格泛光底色强度（叠加符号色的比例）
+_NEAR_MISS_DELAY_MS = 300
+_NUDGE_H = 7
+_BLINK_MS = 400
+_BLINK_TOTAL = 5
+_NEAR_MISS_COLOR = "#ff9f43"
+_FLASH_RISE_MS = 150
+_FLASH_GLOW = 0.14
+
+_NEAR_MISS_WEIGHTS = {
+    _SYM_NOTE:    3,
+    _SYM_DIAMOND: 3,
+    _SYM_COIN:    2,
+    _SYM_LETTER:  1,
+}
+_NEAR_MISS_TEXTS = {
+    _SYM_NOTE:    "就差一点！",
+    _SYM_DIAMOND: "就差一点！",
+    _SYM_COIN:    "差一点！",
+    _SYM_LETTER:  "差一点",
+}
+_NEAR_MISS_COLORS = {
+    _SYM_NOTE:    "#ff6b6b",
+    _SYM_DIAMOND: "#ff6b6b",
+    _SYM_COIN:    "#ff9f43",
+    _SYM_LETTER:  "#5a5e6e",
+}
+_NEAR_MISS_SIZES = {
+    _SYM_NOTE:    18,
+    _SYM_DIAMOND: 18,
+    _SYM_COIN:    15,
+    _SYM_LETTER:  12,
+}
+_NEAR_MISS_BLINKS = {
+    _SYM_NOTE:    7,
+    _SYM_DIAMOND: 7,
+    _SYM_COIN:    5,
+    _SYM_LETTER:  3,
+}
+_NEAR_MISS_NUDGES = {
+    _SYM_NOTE:    3,
+    _SYM_DIAMOND: 3,
+    _SYM_COIN:    2,
+    _SYM_LETTER:  0,
+}
 
 
 def _blend(a: QColor, b: QColor, t: float) -> QColor:
@@ -766,41 +803,56 @@ class SlotMachineDialog(QDialog):
         return "\n".join(lines)
 
     def _reveal_near_miss(self) -> None:
-        """近失揭晓：未凑成的那格 ✕（及其余非奖格）弹一下 + "差一点！"标签闪烁 + 音效。"""
+        """近失揭晓：按符号权重分级音效/nudge/闪烁。"""
         if self._finalized or not self._near_miss_active:
             return
-        sfx = _get_sfx()
-        if sfx is not None:
-            sfx.play_slot_near_miss()
-        # 弹出近失的那两轴（差一格就成三同的那两个同号格）
         pair_sym = near_miss_symbol(self._result)
+        sfx = _get_sfx()
+        if pair_sym is not None and sfx is not None:
+            w = _NEAR_MISS_WEIGHTS.get(pair_sym, 2)
+            if w >= 3:
+                sfx.play_slot_near_miss_high()
+            elif w <= 1:
+                sfx.play_slot_near_miss_low()
+            else:
+                sfx.play_slot_near_miss()
+        elif sfx is not None:
+            sfx.play_slot_near_miss()
         if pair_sym is not None:
+            nudge_times = _NEAR_MISS_NUDGES.get(pair_sym, 2)
             for i, s in enumerate(self._result):
                 if s == pair_sym:
-                    self._reels[i].nudge(times=2)
+                    self._reels[i].nudge(times=nudge_times)
+        if pair_sym is not None:
+            text = _NEAR_MISS_TEXTS.get(pair_sym, "差一点！")
+            self._near_miss_label.setText(text)
         self._near_miss_label.setVisible(True)
-        self._blink_left = _BLINK_TOTAL
+        blink_count = _NEAR_MISS_BLINKS.get(pair_sym, _BLINK_TOTAL) if pair_sym is not None else _BLINK_TOTAL
+        self._blink_left = blink_count
+        self._near_miss_sym = pair_sym
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._blink_near_miss)
         self._blink_timer.start(_BLINK_MS)
 
     def _blink_near_miss(self) -> None:
         self._blink_left -= 1
+        sym = getattr(self, "_near_miss_sym", None)
+        color = _NEAR_MISS_COLORS.get(sym, _NEAR_MISS_COLOR) if sym is not None else _NEAR_MISS_COLOR
+        size = _NEAR_MISS_SIZES.get(sym, 15) if sym is not None else 15
         if self._blink_left <= 0:
             if self._blink_timer is not None:
                 self._blink_timer.stop()
             self._near_miss_label.setStyleSheet(
-                f"color: {_NEAR_MISS_COLOR}; font-size: 15px; font-weight: 700;"
+                f"color: {color}; font-size: {size}px; font-weight: 700;"
             )
             return
-        # 奇偶交替明暗：亮 → 暗 → 亮 …，最后一次定格为亮
         if self._blink_left % 2:
             self._near_miss_label.setStyleSheet(
-                f"color: {_NEAR_MISS_COLOR}; font-size: 15px; font-weight: 700;"
+                f"color: {color}; font-size: {size}px; font-weight: 700;"
             )
         else:
             self._near_miss_label.setStyleSheet(
-                "color: #5a5e6e; font-size: 15px; font-weight: 700;"
+                f"color: #5a5e6e; font-size: {size}px; font-weight: 700;"
             )
 
     # ---- 结算（幂等，唯一入口）----

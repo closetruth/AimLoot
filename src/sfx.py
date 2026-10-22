@@ -28,6 +28,8 @@ _SLOT_SPIN_STEM = "slot_spin"
 _SLOT_REEL_STOP_STEM = "reel_stop"
 _SLOT_WIN_STEM = "slot_win"
 _SLOT_NEAR_MISS_STEM = "near_miss"
+_SLOT_NEAR_MISS_HIGH_STEM = "near_miss_high"
+_SLOT_NEAR_MISS_LOW_STEM = "near_miss_low"
 _RANDOM_FOLDERS = ("op", "ease", "aim")
 _PREWARM_MS = 500
 _MAX_VOICES = 8
@@ -441,10 +443,28 @@ class SfxPlayer(QObject):
         self._play("win", path)
 
     def play_slot_near_miss(self) -> None:
-        """两同 + 未中：差一点提示音。"""
+        """两同 + 未中：差一点提示音（金近失，中等强度）。"""
         if not self.capable():
             return
         path = _find_stem(_SLOT_NEAR_MISS_STEM)
+        if path is None:
+            return
+        self._play("near", path)
+
+    def play_slot_near_miss_high(self) -> None:
+        """强近失音（♪/钻）：低频冲击 + 上行半音 + 叹息。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_NEAR_MISS_HIGH_STEM)
+        if path is None:
+            return
+        self._play("near", path)
+
+    def play_slot_near_miss_low(self) -> None:
+        """弱近失音（字）：简短轻柔单音。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_NEAR_MISS_LOW_STEM)
         if path is None:
             return
         self._play("near", path)
