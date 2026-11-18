@@ -170,6 +170,37 @@ _NEAR_MISS_NUDGES = {
     _SYM_LETTER:  0,
 }
 
+_SUSPENSE_ZONE = {
+    _SYM_NOTE:    18.0,
+    _SYM_DIAMOND: 18.0,
+    _SYM_COIN:    12.0,
+    _SYM_LETTER:   8.0,
+}
+_SUSPENSE_MIN_STEP = {
+    _SYM_NOTE:    0.012,
+    _SYM_DIAMOND: 0.012,
+    _SYM_COIN:    0.025,
+    _SYM_LETTER:  0.04,
+}
+_SUSPENSE_CRUISE_RATIO = {
+    _SYM_NOTE:    0.5,
+    _SYM_DIAMOND: 0.5,
+    _SYM_COIN:    0.6,
+    _SYM_LETTER:  0.7,
+}
+_SUSPENSE_EASE_POW = {
+    _SYM_NOTE:    2.5,
+    _SYM_DIAMOND: 2.5,
+    _SYM_COIN:    2.0,
+    _SYM_LETTER:  1.8,
+}
+_SUSPENSE_HEARTBEAT = {
+    _SYM_NOTE:    True,
+    _SYM_DIAMOND: True,
+    _SYM_COIN:    False,
+    _SYM_LETTER:  False,
+}
+
 
 def _blend(a: QColor, b: QColor, t: float) -> QColor:
     """按 t∈[0,1] 在 a→b 之间线性插值（渐亮边框 / 泛光底色）。"""
@@ -198,10 +229,12 @@ def _match_of(s0: int, s1: int, s2: int) -> Optional[int]:
     return None
 
 
-def third_has_suspense(result: Tuple[int, int, int]) -> bool:
-    """第三轴是否值得减速停：前两轴同号——第三轴真有机会凑三同。"""
+def third_has_suspense(result: Tuple[int, int, int]) -> Optional[int]:
+    """第三轴是否值得减速停：前两轴同号时返回该符号，否则 None。"""
     a, b = result[0], result[1]
-    return a == b
+    if a == b:
+        return a
+    return None
 
 
 def near_miss_symbol(result: Tuple[int, int, int]) -> Optional[int]:
@@ -352,6 +385,7 @@ class _ReelWidget(QWidget):
         self._flash = None
         self._flash_strength = 0.0
         self._slowdown = False
+        self._suspense_sym: Optional[int] = None
         self._timer.setInterval(_TICK_MS)
         self._timer.start()
 
@@ -360,18 +394,21 @@ class _ReelWidget(QWidget):
         symbol: int,
         *,
         slowdown: bool = False,
+        suspense_sym: Optional[int] = None,
         graze: Optional[int] = None,
     ) -> None:
         """从当前 offset 往后找最近的 symbol 格作为停点（整格对齐）。
 
-        slowdown=True 时先爬行（减速悬念），最后快速落定。
+        suspense_sym 给定时按符号分级减速悬念（双段曲线）。
+        slowdown=True 时用旧版单一阻尼减速（向后兼容）。
         否则按真机节奏：在 _STOP_SLIDE_MS 内匀速滑到停点后骤停。
         graze 给定且 symbol 不是 graze 时，优先选一格使 graze 显示在赔付线
         正上方（屏幕上格 = strip[offset+1]）——真机的"擦线而过"近失画面。
         """
         if self._stopped or self._target is not None:
             return
-        self._slowdown = slowdown
+        self._slowdown = slowdown or (suspense_sym is not None)
+        self._suspense_sym = suspense_sym
         base = math.ceil(self._offset)
         target = None
         if graze is not None and graze != symbol:
@@ -391,8 +428,7 @@ class _ReelWidget(QWidget):
         if target is None:
             return
         self._target = target
-        if not slowdown:
-            # 真机式停轴：固定滑行时长 → 恒定步长，最后一格瞬间落定
+        if not self._slowdown:
             distance = target - self._offset
             ticks = max(1, int(_STOP_SLIDE_MS / _TICK_MS))
             self._stop_step = max(distance / ticks, _NORMAL_STEP)
@@ -501,14 +537,32 @@ class _ReelWidget(QWidget):
             return
         self.update()
 
-    @staticmethod
-    def _step_for_remaining(remaining: float) -> float:
-        """阻尼减速：剩余越少步长越小（幂曲线），近端收敛到 _SLOW_MIN_STEP。"""
-        if remaining >= _SLOW_ZONE_CELLS:
+    def _step_for_remaining(self, remaining: float) -> float:
+        """双段减速：匀速→慢匀速（悬念爬行）→阻尼减速（极慢落定）。
+
+        suspense_sym 给定时按符号分级选参数，否则用旧版单一阻尼。
+        """
+        sym = self._suspense_sym
+        if sym is not None:
+            zone = _SUSPENSE_ZONE.get(sym, _SLOW_ZONE_CELLS)
+            min_step = _SUSPENSE_MIN_STEP.get(sym, _SLOW_MIN_STEP)
+            cruise = _SUSPENSE_CRUISE_RATIO.get(sym, 0.6)
+            pow_ = _SUSPENSE_EASE_POW.get(sym, _SLOW_EASE_POW)
+        else:
+            zone = _SLOW_ZONE_CELLS
+            min_step = _SLOW_MIN_STEP
+            cruise = 1.0
+            pow_ = _SLOW_EASE_POW
+
+        if remaining >= zone:
             return _NORMAL_STEP
-        t = max(0.0, remaining / _SLOW_ZONE_CELLS)
-        eased = t ** _SLOW_EASE_POW
-        return max(_SLOW_MIN_STEP, _NORMAL_STEP * eased)
+        cruise_step = _NORMAL_STEP * cruise
+        brake_zone = zone * 0.3
+        if remaining > brake_zone:
+            return cruise_step
+        t = max(0.0, remaining / brake_zone)
+        eased = t ** pow_
+        return max(min_step, cruise_step * eased)
 
     def _halt(self) -> None:
         self._offset = float(self._target)
@@ -696,12 +750,15 @@ class SlotMachineDialog(QDialog):
         reel = self._reels[i]
         if self._finalized or self._result_shown or reel.is_stopped() or reel.is_stopping():
             return
-        slowdown = i == 2 and third_has_suspense(self._result)
-        # 真机式近失：第三轴停稳时让"差一格的符号"挂在赔付线上方（擦线而过）
+        suspense_sym = i == 2 and third_has_suspense(self._result) or None
         graze = None
         if i == 2:
             graze = near_miss_symbol(self._result)
-        reel.stop_at(self._result[i], slowdown=slowdown, graze=graze)
+        if suspense_sym is not None and _SUSPENSE_HEARTBEAT.get(suspense_sym, False):
+            sfx = _get_sfx()
+            if sfx is not None:
+                sfx.play_slot_suspense()
+        reel.stop_at(self._result[i], suspense_sym=suspense_sym, graze=graze)
 
     # ---- 动画 ----
 

@@ -93,6 +93,9 @@ class _RecordingSfx:
     def play_slot_near_miss(self) -> None:
         self.calls.append("near")
 
+    def play_slot_suspense(self) -> None:
+        self.calls.append("suspense")
+
 
 class _SfxInjection(unittest.TestCase):
     """基类：把 _RecordingSfx 挂到 app.sfx，测试结束还原。"""

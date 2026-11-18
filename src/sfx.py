@@ -30,6 +30,7 @@ _SLOT_WIN_STEM = "slot_win"
 _SLOT_NEAR_MISS_STEM = "near_miss"
 _SLOT_NEAR_MISS_HIGH_STEM = "near_miss_high"
 _SLOT_NEAR_MISS_LOW_STEM = "near_miss_low"
+_SLOT_SUSPENSE_STEM = "suspense"
 _RANDOM_FOLDERS = ("op", "ease", "aim")
 _PREWARM_MS = 500
 _MAX_VOICES = 8
@@ -465,6 +466,15 @@ class SfxPlayer(QObject):
         if not self.capable():
             return
         path = _find_stem(_SLOT_NEAR_MISS_LOW_STEM)
+        if path is None:
+            return
+        self._play("near", path)
+
+    def play_slot_suspense(self) -> None:
+        """悬念心跳音：第三轴减速时低频脉冲。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_SUSPENSE_STEM)
         if path is None:
             return
         self._play("near", path)

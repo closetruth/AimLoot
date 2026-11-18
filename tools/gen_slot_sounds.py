@@ -137,6 +137,25 @@ def _near_low(dur: float = 0.15) -> bytes:
     return bytes(out)
 
 
+def _suspense_heartbeat(dur: float = 1.8) -> bytes:
+    """悬念心跳音：低频脉冲间隔递减，模拟心跳加速。"""
+    n = int(SR * dur)
+    out = bytearray()
+    beat_interval = 0.45
+    beat_decay = 0.72
+    next_beat = 0.0
+    for i in range(n):
+        t = i / SR
+        if t >= next_beat:
+            next_beat = t + beat_interval
+            beat_interval *= beat_decay
+        dist = t - (next_beat - beat_interval)
+        pulse = math.sin(2 * math.pi * 55 * t) * math.exp(-dist * 12.0) * 0.4
+        pulse += math.sin(2 * math.pi * 110 * t) * math.exp(-dist * 18.0) * 0.15
+        out += struct.pack("<h", int(max(-1.0, min(1.0, pulse)) * 24000))
+    return bytes(out)
+
+
 def _write(path: str, samples: bytes) -> None:
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
@@ -156,7 +175,8 @@ if __name__ == "__main__":
     _write(os.path.join(sounds, "near_miss.wav"), _near())
     _write(os.path.join(sounds, "near_miss_high.wav"), _near_high())
     _write(os.path.join(sounds, "near_miss_low.wav"), _near_low())
+    _write(os.path.join(sounds, "suspense.wav"), _suspense_heartbeat())
     _write(os.path.join(sounds, "slot_win.wav"), _win())
     _write(os.path.join(sounds, "slot_spin.wav"), _spin())
-    print("written: reel_stop.wav, near_miss.wav, near_miss_high.wav, near_miss_low.wav, slot_win.wav, slot_spin.wav")
+    print("written: reel_stop.wav, near_miss.wav, near_miss_high.wav, near_miss_low.wav, suspense.wav, slot_win.wav, slot_spin.wav")
     sys.exit(0)
