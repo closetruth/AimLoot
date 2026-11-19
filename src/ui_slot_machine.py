@@ -12,7 +12,15 @@ import random
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -155,6 +163,8 @@ _AUTO_STOP_FALLBACK_MS = 30000  # 不按「停」时的兜底：30 秒自动停�
 _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
+_DRUM_SLOTS = 10          # 圆鼓一圈格数（同 Vue 每轴 10 格 → 36°/格）
+_DRUM_EDGE_DIM = 0.40     # 转到侧面的格压暗到 40%（正面 100%），强化圆柱纵深
 
 # 停轴时长与 Vue 版一致：三轴同帧起刹，落定时长依次 4s / 5s / 6s。
 # 距离由时长反推（见 _stop_min_dist），速度曲线见 _step_for_remaining。
@@ -608,22 +618,43 @@ class _ReelWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         row_h = self.height() / _VISIBLE_ROWS
-        # 亚像素平移：格内进度 × 行高，让滚动连续而非整格跳。
-        # nudge 为"想再滚一格"的向下推（正方向与滚向一致）。
-        frac = self._offset - int(self._offset)
-        scroll_px = frac * row_h if not self._stopped else 0.0
-        p.translate(0, scroll_px + self._nudge * _NUDGE_H)
+        # 圆鼓几何：格沿水平轴绕一圈排布，半径由「格高 + 每格夹角」反推，
+        # 等价于 Vue 的 rotateX + translateZ。格越靠边（cos 越小）越矮、越窄、越暗，
+        # 窗口上下沿正好是鼓面转到 90° 消失的位置——真机的"圆柱窗"观感。
+        radius = row_h / 2.0 / math.tan(math.pi / _DRUM_SLOTS)
+        step = 2.0 * math.pi / _DRUM_SLOTS
+        center_y = self.height() / 2.0
+        frac = 0.0 if self._stopped else self._offset - int(self._offset)
         has_flash = self._flash is not None and self._flash_strength > 0.0
         flash_color = QColor(self._flash) if has_flash else None
         base_border = QColor(BORDER)
         base_bg = QColor(BG_CARD)
-        # 多画一行，保证平移后上下边缘不露空
-        for row in (-2, -1, 0, 1):
+        black = QColor(0, 0, 0)
+        p.save()
+        p.setClipRect(self.rect())
+        # nudge 为"想再滚一格"的向下推（正方向与滚向一致），整体位移鼓面
+        p.translate(0.0, self._nudge * _NUDGE_H)
+        # 由远及近绘制：侧面格先画，正面格压在最上层
+        cells = []
+        span = _DRUM_SLOTS // 2
+        for row in range(-span, span + 1):
+            cos_a = math.cos((row + frac) * step)
+            if cos_a <= 0.02:
+                continue
+            cells.append((cos_a, row))
+        cells.sort(key=lambda item: item[0])
+        for cos_a, row in cells:
             sym = self._symbol_at(row)
-            rect = self.rect().adjusted(4, 0, -4, 0)
-            rect.moveTop(int((row + 1) * row_h) + 2)
-            rect.setHeight(int(row_h) - 4)
-            # 只有中线（命中线）格参与高亮：边框渐亮 + 符号色泛光底色
+            ang = (row + frac) * step
+            h = max(2.0, row_h * cos_a - 2.0)
+            inset = (1.0 - cos_a) * row_h * 0.4
+            rect = QRectF(
+                4.0 + inset,
+                center_y + radius * math.sin(ang) - h / 2.0,
+                self.width() - 8.0 - inset * 2.0,
+                h,
+            )
+            # 只有正对中线的格参与中奖高亮：边框渐亮 + 符号色泛光底色
             center_flash = has_flash and row == 0 and flash_color is not None
             if center_flash:
                 border = _blend(base_border, flash_color, self._flash_strength)
@@ -631,19 +662,26 @@ class _ReelWidget(QWidget):
                 bg = _blend(base_bg, _SYM_COLOR_Q[sym], glow_t)
                 pen_w = 2
             else:
-                border = base_border
-                bg = base_bg
+                dim = _DRUM_EDGE_DIM + (1.0 - _DRUM_EDGE_DIM) * cos_a
+                border = _blend(black, base_border, dim)
+                bg = _blend(black, base_bg, dim)
                 pen_w = 1
             p.setPen(QPen(border, pen_w))
             p.setBrush(bg)
-            p.drawRoundedRect(rect, 6, 6)
-            p.setPen(QColor(_SYM_COLOR[sym]))
+            corner = min(6.0, h / 3.0)
+            p.drawRoundedRect(rect, corner, corner)
+            dim_text = _DRUM_EDGE_DIM + (1.0 - _DRUM_EDGE_DIM) * cos_a
+            p.setPen(_blend(black, QColor(_SYM_COLOR[sym]), dim_text))
+            size = (26 if row == 0 else 15) * cos_a
             if _emoji_usable(sym):
-                p.setFont(_emoji_font(26 if row == 0 else 16))
+                p.setFont(_emoji_font(max(7, int(size))))
                 p.drawText(rect, Qt.AlignCenter, _SYM_EMOJI[sym])
             else:
-                p.setFont(QFont("Microsoft YaHei UI", 26 if row == 0 else 15, QFont.Bold))
+                p.setFont(
+                    QFont("Microsoft YaHei UI", max(6, int(size)), QFont.Bold)
+                )
                 p.drawText(rect, Qt.AlignCenter, _SYM_CHAR[sym])
+        p.restore()
         p.end()
 
 
