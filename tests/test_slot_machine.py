@@ -263,9 +263,10 @@ class SlowdownTests(unittest.TestCase):
     """减速停轴：所有轴都走阻尼减速，落定前明显变慢。"""
 
     def test_stop_reserves_braking_distance(self):
-        """停点必须留出减速区宽度，否则来不及减速（观感仍是骤停）。"""
-        from src.ui_slot_machine import _ReelWidget, _STOP_ZONE_CELLS
+        """停点必须留出减速距离，否则来不及减速（观感仍是骤停）。"""
+        from src.ui_slot_machine import _REEL_STOP_MS, _ReelWidget, _stop_min_dist
 
+        need = _stop_min_dist(_REEL_STOP_MS[0])
         for start in range(0, 22):
             for symbol in range(4):
                 reel = _ReelWidget()
@@ -273,8 +274,8 @@ class SlowdownTests(unittest.TestCase):
                 reel.start_spin()
                 reel.stop_at(symbol)
                 self.assertGreaterEqual(
-                    reel._target - reel._offset, _STOP_ZONE_CELLS,
-                    f"起点{start} 停{symbol}：距离不足减速区",
+                    reel._target - reel._offset, need,
+                    f"起点{start} 停{symbol}：距离不足减速所需",
                 )
 
     def test_normal_stop_decelerates_before_halt(self):
@@ -386,8 +387,8 @@ class SlotMachineDialogTests(_SfxInjection):
             dlg._reels[2].is_stopping(), "第三轴也应同帧起刹（不再延迟）",
         )
         self.assertGreater(
-            dlg._reels[2]._zone_override, dlg._reels[0]._zone_override,
-            "第三轴减速区更宽 → 落定更晚",
+            dlg._reels[2]._stop_ms, dlg._reels[0]._stop_ms,
+            "第三轴时长更长 → 落定更晚",
         )
         _wait_result(dlg)
         self.assertEqual(

@@ -156,17 +156,17 @@ _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
 
-# 普通停轴（真实刹车）：速度随剩余距离二次收敛（恒减速度），
-# 进减速区那一帧速度与滚动速度无缝衔接，再单调减到爬行速度，
-# 最后 1 格以 0.045 格/帧（≈355ms/格）滑入——单轴约 1.25s 停稳。
-_STOP_ZONE_CELLS = 6.0    # 剩余几格开始刹车（同时是选停点所需的最小距离）
-_STOP_CREEP_CELLS = 1.0   # 末端低速爬行格数（机械卡位的"落定"感）
-_STOP_CREEP_STEP = 0.045  # 爬行速度（格/帧，越小越绵）
+# 停轴时长与 Vue 版一致：三轴同帧起刹，落定时长依次 4s / 5s / 6s。
+# 距离由时长反推（见 _stop_min_dist），速度曲线见 _step_for_remaining。
+_REEL_STOP_MS = (4000.0, 5000.0, 6000.0)
+# 悬念轴（前两轴同号）：在第三轴时长基础上再拉长，营造"差一点"的拖拽感。
+_SUSPENSE_STOP_SCALE = {
+    _SYM_NOTE:    1.25,
+    _SYM_DIAMOND: 1.25,
+    _SYM_COIN:    1.15,
+    _SYM_LETTER:  1.15,
+}
 _NORMAL_STEP = _SPIN_CELLS_PER_SEC * _TICK_MS / 1000.0  # 匀速每帧步长
-
-# 三轴同一帧起刹，但刹车阻力递增（减速区依次变宽）→ 同时咬合、先后落定，
-# 与真机"三个刹车片同时压下、惯性不同"的观感一致。
-_REEL_STOP_ZONES = (5.0, 6.5, 8.0)
 
 _NEAR_MISS_DELAY_MS = 300
 _NUDGE_H = 7
@@ -213,26 +213,7 @@ _NEAR_MISS_NUDGES = {
     _SYM_LETTER:  0,
 }
 
-# 悬念轴（前两轴同号）：同一套刹车曲线，只把减速区和爬行速度拉长。
-# ♪/钻最拖（≈3.0~3.4s），金 ≈2.2~2.6s，字 ≈2.0~2.4s。
-_SUSPENSE_ZONE = {
-    _SYM_NOTE:     10.0,
-    _SYM_DIAMOND:  10.0,
-    _SYM_COIN:     9.0,
-    _SYM_LETTER:   9.0,
-}
-_SUSPENSE_CREEP_CELLS = {
-    _SYM_NOTE:    1.2,
-    _SYM_DIAMOND: 1.2,
-    _SYM_COIN:    0.9,
-    _SYM_LETTER:  1.0,
-}
-_SUSPENSE_CREEP_STEP = {
-    _SYM_NOTE:    0.025,
-    _SYM_DIAMOND: 0.025,
-    _SYM_COIN:    0.032,
-    _SYM_LETTER:  0.038,
-}
+# 悬念轴（前两轴同号）：沿用同一套曲线，只是时长按符号再放大。
 _SUSPENSE_HEARTBEAT = {
     _SYM_NOTE:    True,
     _SYM_DIAMOND: True,
@@ -241,30 +222,17 @@ _SUSPENSE_HEARTBEAT = {
 }
 
 
-def _stop_profile(
-    suspense_sym: Optional[int],
-    zone_override: Optional[float] = None,
-) -> Tuple[float, float, float]:
-    """停轴刹车参数 (减速区格数, 爬行格数, 爬行步长)：悬念轴按符号分级。
-
-    zone_override 只在普通停轴（无悬念）时生效，用于让三轴阻力不同。
-    """
+def _stop_duration_ms(reel_index: int, suspense_sym: Optional[int]) -> float:
+    """该轴落定总时长（毫秒）：三轴 4s/5s/6s，悬念轴再按符号放大。"""
+    base = _REEL_STOP_MS[min(reel_index, len(_REEL_STOP_MS) - 1)]
     if suspense_sym is None:
-        zone = _STOP_ZONE_CELLS if zone_override is None else zone_override
-        return zone, _STOP_CREEP_CELLS, _STOP_CREEP_STEP
-    return (
-        _SUSPENSE_ZONE.get(suspense_sym, _STOP_ZONE_CELLS),
-        _SUSPENSE_CREEP_CELLS.get(suspense_sym, _STOP_CREEP_CELLS),
-        _SUSPENSE_CREEP_STEP.get(suspense_sym, _STOP_CREEP_STEP),
-    )
+        return base
+    return base * _SUSPENSE_STOP_SCALE.get(suspense_sym, 1.0)
 
 
-def _stop_zone_for(
-    suspense_sym: Optional[int],
-    zone_override: Optional[float] = None,
-) -> float:
-    """停轴减速区宽度（格）：决定停点必须预留的最小距离。"""
-    return _stop_profile(suspense_sym, zone_override)[0]
+def _stop_min_dist(duration_ms: float) -> float:
+    """从匀速刹停所需的最小距离（格）：恒减速度下 D = v0 * T / 2。"""
+    return _SPIN_CELLS_PER_SEC * (duration_ms / 1000.0) / 2.0
 
 
 def _blend(a: QColor, b: QColor, t: float) -> QColor:
@@ -442,7 +410,9 @@ class _ReelWidget(QWidget):
         self._timer.setInterval(_TICK_MS)
         self._timer.timeout.connect(self._on_tick)
         self._suspense_sym: Optional[int] = None
-        self._zone_override: Optional[float] = None
+        self._stop_ms: float = _REEL_STOP_MS[0]
+        self._stop_dist: float = 0.0
+        self._stop_pow: float = 0.5
 
     def start_spin(self) -> None:
         self._target = None
@@ -450,7 +420,9 @@ class _ReelWidget(QWidget):
         self._flash = None
         self._flash_strength = 0.0
         self._suspense_sym = None
-        self._zone_override = None
+        self._stop_ms = _REEL_STOP_MS[0]
+        self._stop_dist = 0.0
+        self._stop_pow = 0.5
         self._timer.setInterval(_TICK_MS)
         self._timer.start()
 
@@ -460,13 +432,12 @@ class _ReelWidget(QWidget):
         *,
         suspense_sym: Optional[int] = None,
         graze: Optional[int] = None,
-        zone: Optional[float] = None,
+        duration_ms: Optional[float] = None,
     ) -> None:
-        """从当前 offset 往后找最近的 symbol 格作为停点（整格对齐），并预留减速距离。
+        """从当前 offset 往后找 symbol 格作为停点（整格对齐），并预留减速距离。
 
-        suspense_sym 给定时按符号分级减速悬念（更拖的双段曲线），否则走普通绵软减速。
-        zone 覆盖普通停轴的减速区宽度：三轴同一帧起刹、阻力不同 → 先后落定。
-        停点优先满足「距离 ≥ 减速区」：距离太短来不及减速，观感仍是骤停。
+        duration_ms 决定整段落定耗时（默认按轴序号 4s/5s/6s，悬念轴再放大），
+        停点距离由时长反推（恒减速度 D = v0*T/2），因此时长精确、速度连续。
         查找优先级：带 graze 且够远 → 带 graze（保近失画面）→ 够远 → 最近一格。
         graze 给定时优先选一格使 graze 显示在赔付线正上方
         （屏幕上格 = strip[offset+1]）——真机的"擦线而过"近失画面。
@@ -474,13 +445,16 @@ class _ReelWidget(QWidget):
         if self._stopped or self._target is not None:
             return
         self._suspense_sym = suspense_sym
-        self._zone_override = zone
+        self._stop_ms = (
+            duration_ms if duration_ms is not None
+            else _stop_duration_ms(0, suspense_sym)
+        )
         base = math.ceil(self._offset)
-        min_dist = int(math.ceil(_stop_zone_for(suspense_sym, zone)))
+        min_dist = int(math.ceil(_stop_min_dist(self._stop_ms)))
         graze_want = graze if (graze is not None and graze != symbol) else None
 
         def find(want_graze: Optional[int], min_step: int) -> Optional[float]:
-            for step in range(max(1, min_step), _PHYSICAL_LEN + 1):
+            for step in range(max(1, min_step), min_step + _PHYSICAL_LEN + 1):
                 idx = (base + step) % _PHYSICAL_LEN
                 if _PHYSICAL_STRIP[idx] != symbol:
                     continue
@@ -502,6 +476,11 @@ class _ReelWidget(QWidget):
         if target is None:
             return
         self._target = target
+        # 由「实际距离 + 目标时长」反解速度曲线指数 p：
+        # v(r) = v0 * (r/D)^p，落定耗时 T = D / (v0 * (1-p))，令其等于 _stop_ms。
+        self._stop_dist = max(1e-6, target - self._offset)
+        ratio = self._stop_dist / (_SPIN_CELLS_PER_SEC * self._stop_ms / 1000.0)
+        self._stop_pow = max(0.05, min(0.75, 1.0 - ratio))
 
     def is_stopped(self) -> bool:
         return self._stopped
@@ -605,23 +584,18 @@ class _ReelWidget(QWidget):
         self.update()
 
     def _step_for_remaining(self, remaining: float) -> float:
-        """真实刹车：速度随剩余距离二次收敛（恒减速度），末端低速爬行落定。
+        """轻尾减速曲线：v(r) = v0 * (r/D)^p，末端长时间爬行才落定。
 
-        v(r) = v0                                          r >= zone
-             = vc + (v0 - vc) * ((r - creep)/(zone - creep))^2   creep <= r < zone
-             = vc                                          r < creep
-
-        r=zone 处 v 恰为滚动速度（速度无缝衔接，不跳变），随后单调递减到 vc；
-        最后几格以 vc 爬行，由 _on_tick 的 min(step, remaining) 精确落格。
+        r=D 处速度恰为滚动速度（无缝衔接，不跳变），随后随剩余距离单调收敛；
+        p 由「距离 + 目标时长」反解（见 stop_at），因此整段耗时精确等于时长。
+        p=0.5 时等价恒减速度（v ∝ √r）；p 越小尾巴越长、越"绵"。
         """
-        zone, creep, vc = _stop_profile(self._suspense_sym, self._zone_override)
-        if remaining >= zone:
+        dist = self._stop_dist
+        if dist <= 0.0 or remaining >= dist:
             return _NORMAL_STEP
-        if remaining <= creep:
-            return vc
-        span = max(1e-6, zone - creep)
-        t = (remaining - creep) / span
-        return vc + (_NORMAL_STEP - vc) * t * t
+        if remaining <= 0.0:
+            return 0.0
+        return _NORMAL_STEP * (remaining / dist) ** self._stop_pow
 
     def _halt(self) -> None:
         self._offset = float(self._target)
@@ -818,7 +792,7 @@ class SlotMachineDialog(QDialog):
             self._result[i],
             suspense_sym=suspense_sym,
             graze=graze,
-            zone=_REEL_STOP_ZONES[i],
+            duration_ms=_stop_duration_ms(i, suspense_sym),
         )
 
     # ---- 动画 ----
