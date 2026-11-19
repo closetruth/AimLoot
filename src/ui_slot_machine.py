@@ -14,7 +14,7 @@ from functools import partial
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -94,6 +94,46 @@ _SYM_COLOR = {
     _SYM_NOTE: "#c9a0ff",     # 紫
 }
 _SYM_COLOR_Q = {k: QColor(v) for k, v in _SYM_COLOR.items()}
+
+# 转轮上直接显示的 emoji（键盘可直接输入）。
+_SYM_EMOJI = {
+    _SYM_COIN: "\U0001F4B0",            # 💰 金币（Unicode 6.0，Win7+ 均有）
+    _SYM_DIAMOND: "\U0001F48E",         # 💎 钻石
+    _SYM_LETTER: "\U0001F170\uFE0F",    # 🅰️ 字母 A
+    _SYM_NOTE: "\U0001F3B5",            # 🎵 音符
+}
+_EMOJI_FAMILIES = ("Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji")
+_emoji_ok: dict[int, bool] = {}
+
+
+def _emoji_font(px: int) -> QFont:
+    f = QFont()
+    f.setFamilies(list(_EMOJI_FAMILIES))
+    f.setPixelSize(px)
+    return f
+
+
+def _emoji_usable(sym: int) -> bool:
+    """探测该 emoji 能否真正画出彩色像素；缺字/单色剪影则回退中文字形。"""
+    cached = _emoji_ok.get(sym)
+    if cached is not None:
+        return cached
+    img = QImage(64, 64, QImage.Format_RGB32)
+    img.fill(QColor("#101018"))
+    probe = QPainter(img)
+    probe.setFont(_emoji_font(44))
+    probe.drawText(img.rect(), Qt.AlignCenter, _SYM_EMOJI[sym])
+    probe.end()
+    # 只数饱和像素：豆腐块与单色剪影的色度≈0，据此判为不可用。
+    colorful = 0
+    for y in range(64):
+        for x in range(64):
+            c = img.pixelColor(x, y)
+            if max(c.red(), c.green(), c.blue()) - min(c.red(), c.green(), c.blue()) > 50:
+                colorful += 1
+    ok = colorful > 40
+    _emoji_ok[sym] = ok
+    return ok
 
 # 三同倍率（金/钻作用于 base 对应币种）；字/♪ 三同给固定数量
 _TRIPLE_PAYOUTS = {
@@ -604,9 +644,13 @@ class _ReelWidget(QWidget):
             p.setPen(QPen(border, pen_w))
             p.setBrush(bg)
             p.drawRoundedRect(rect, 6, 6)
-            p.setFont(QFont("Microsoft YaHei UI", 26 if row == 0 else 15, QFont.Bold))
             p.setPen(QColor(_SYM_COLOR[sym]))
-            p.drawText(rect, Qt.AlignCenter, _SYM_CHAR[sym])
+            if _emoji_usable(sym):
+                p.setFont(_emoji_font(26 if row == 0 else 16))
+                p.drawText(rect, Qt.AlignCenter, _SYM_EMOJI[sym])
+            else:
+                p.setFont(QFont("Microsoft YaHei UI", 26 if row == 0 else 15, QFont.Bold))
+                p.drawText(rect, Qt.AlignCenter, _SYM_CHAR[sym])
         p.end()
 
 
@@ -975,3 +1019,98 @@ class SlotMachineDialog(QDialog):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._center_on_parent()
+
+
+_SYM_FROM_CHAR = {v: k for k, v in _SYM_CHAR.items()}
+
+
+def _parse_result(text: str) -> Tuple[int, int, int]:
+    """解析调试结果串：000 / 0,0,0 / 金钻字♪。"""
+    raw = text.replace(",", "").replace(" ", "")
+    if len(raw) != 3:
+        raise ValueError("结果必须是 3 个符号：000 / 0,0,0 / 金钻字♪")
+    out: List[int] = []
+    for ch in raw:
+        if ch in _SYM_FROM_CHAR:
+            out.append(_SYM_FROM_CHAR[ch])
+        elif ch.isdigit() and int(ch) in _SYM_CHAR:
+            out.append(int(ch))
+        else:
+            raise ValueError(f"未知符号：{ch}")
+    return out[0], out[1], out[2]
+
+
+def _describe_result(result: Tuple[int, int, int]) -> str:
+    triple = _match_of(*result)
+    if triple is not None:
+        return f"三同{_SYM_CHAR[triple]}"
+    pair = near_miss_symbol(result)
+    if pair is not None:
+        return f"近失（{_SYM_CHAR[pair]}{_SYM_CHAR[pair]}，第三轴差一格）"
+    return "无奖"
+
+
+def _describe_prizes(prizes: SlotPrizes) -> str:
+    parts: List[str] = []
+    if prizes.reward.gold:
+        parts.append(f"金币 {prizes.reward.gold}")
+    if prizes.reward.diamond:
+        parts.append(f"钻石 {prizes.reward.diamond}")
+    if prizes.letters:
+        parts.append(
+            "字母 " + "、".join(
+                f"{c}（{_LETTER_RARITY_NAMES[r]}）" for c, r in prizes.letters
+            )
+        )
+    if prizes.song_tokens:
+        parts.append(
+            "试听券 " + "、".join(f"{n}×{c}" for n, c in prizes.song_tokens.items())
+        )
+    return "，".join(parts) if parts else "空"
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
+    """独立调试启动器：python -m src.ui_slot_machine [结果] [--gold N] [--seed N]。"""
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="python -m src.ui_slot_machine",
+        description="老虎机独立调试启动器（不加载主程序与存档）",
+    )
+    parser.add_argument("result", nargs="?", help="强制结果：000 / 0,0,0 / 金钻字♪；省略则随机")
+    parser.add_argument("--gold", type=float, default=1.0, help="基础金币（三同金倍率基准）")
+    parser.add_argument("--diamond", type=float, default=0.0, help="基础钻石（三同钻倍率基准）")
+    parser.add_argument("--title", default="老虎机调试", help="弹窗标题")
+    parser.add_argument("--seed", type=int, default=None, help="固定随机种子")
+    args = parser.parse_args(argv)
+
+    forced = _parse_result(args.result) if args.result else None
+    rng = random.Random(args.seed) if args.seed is not None else None
+    result = forced if forced is not None else spin_result(rng)
+
+    app = QApplication(sys.argv[:1])
+    from .sfx import SfxPlayer
+
+    sfx = SfxPlayer({})
+    app.sfx = sfx
+
+    print(f"[结果] {result} → {_describe_result(result)}")
+    print(f"[音效] capable={sfx.capable()}")
+    for sym, p in triple_probabilities().items():
+        print(f"[概率] 三同{_SYM_CHAR[sym]} {p * 100:.2f}%")
+
+    dlg = SlotMachineDialog(
+        Reward(gold=args.gold, diamond=args.diamond),
+        task_title=args.title,
+        result=result,
+        rng=rng,
+    )
+    dlg.prize_decided.connect(lambda prizes: print(f"[产出] {_describe_prizes(prizes)}"))
+    dlg.exec()
+    sfx.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
