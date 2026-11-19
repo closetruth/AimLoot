@@ -260,29 +260,31 @@ class ReelDirectionTests(unittest.TestCase):
 
 
 class SlowdownTests(unittest.TestCase):
-    """减速停轴：阻尼式步长收缩（连续滑行）。"""
+    """减速停轴：所有轴都走阻尼减速，落定前明显变慢。"""
 
-    def test_normal_stop_uses_slide_step(self):
-        """非减速停轴：按固定滑行时长（180ms）换算步长，快速落定。"""
-        from src.ui_slot_machine import _ReelWidget
+    def test_stop_reserves_braking_distance(self):
+        """停点必须留出减速区宽度，否则来不及减速（观感仍是骤停）。"""
+        from src.ui_slot_machine import _ReelWidget, _STOP_ZONE_CELLS
 
-        reel = _ReelWidget()
-        reel._offset = 0.0
-        reel.start_spin()
-        reel.stop_at(1)
-        slide_step = reel._stop_step
-        start = reel._offset
-        reel._on_tick()
-        self.assertAlmostEqual(reel._offset - start, slide_step, places=6)
-        self.assertGreater(slide_step, 0)
+        for start in range(0, 22):
+            for symbol in range(4):
+                reel = _ReelWidget()
+                reel._offset = float(start)
+                reel.start_spin()
+                reel.stop_at(symbol)
+                self.assertGreaterEqual(
+                    reel._target - reel._offset, _STOP_ZONE_CELLS,
+                    f"起点{start} 停{symbol}：距离不足减速区",
+                )
 
-    def test_slowdown_shrinks_step_near_target(self):
+    def test_normal_stop_decelerates_before_halt(self):
+        """普通停轴：末段步长显著小于匀速步长。"""
         from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
 
         reel = _ReelWidget()
         reel._offset = 0.0
         reel.start_spin()
-        reel.stop_at(1, slowdown=True)
+        reel.stop_at(1)
         steps = []
         prev = reel._offset
         for _ in range(2000):
@@ -296,14 +298,34 @@ class SlowdownTests(unittest.TestCase):
         self.assertLess(min(steps[-6:]), _NORMAL_STEP * 0.5, "临近停点应显著减速")
         self.assertLess(min(steps[-6:]), max(steps[:6]))
 
+    def test_suspense_stop_crawls_slower_than_normal(self):
+        """悬念轴（前两轴同号）比普通轴更拖。"""
+        from src.ui_slot_machine import _ReelWidget
+
+        def frames(suspense_sym):
+            reel = _ReelWidget()
+            reel._offset = 0.0
+            reel.start_spin()
+            reel.stop_at(1, suspense_sym=suspense_sym)
+            count = 0
+            for _ in range(4000):
+                reel._on_tick()
+                count += 1
+                if reel.is_stopped():
+                    break
+            self.assertEqual(reel.center_symbol(), 1)
+            return count
+
+        self.assertGreater(frames(1), frames(None), "悬念停轴应更慢")
+
     def test_third_suspense_detection(self):
         from src.ui_slot_machine import third_has_suspense
 
-        self.assertTrue(third_has_suspense((0, 0, 9)), "金金 冲三同")
-        self.assertTrue(third_has_suspense((2, 2, 9)), "字字 冲三同")
-        self.assertTrue(third_has_suspense((3, 3, 9)), "♪♪ 冲三同")
-        self.assertFalse(third_has_suspense((0, 2, 9)), "金字 必然无三同，无悬念")
-        self.assertFalse(third_has_suspense((0, 1, 9)), "金钻混排无悬念")
+        self.assertEqual(third_has_suspense((0, 0, 9)), 0, "金金 冲三同")
+        self.assertEqual(third_has_suspense((2, 2, 9)), 2, "字字 冲三同")
+        self.assertEqual(third_has_suspense((3, 3, 9)), 3, "♪♪ 冲三同")
+        self.assertIsNone(third_has_suspense((0, 2, 9)), "金字 必然无三同，无悬念")
+        self.assertIsNone(third_has_suspense((0, 1, 9)), "金钻混排无悬念")
 
     def test_physical_strip_layout(self):
         """物理带22格，近失邻接：金/字两侧必须是钻或♪。"""
@@ -349,7 +371,7 @@ class SlowdownTests(unittest.TestCase):
 
 class SlotMachineDialogTests(_SfxInjection):
     def test_manual_stop_stops_all_reels_and_keeps_result(self):
-        """按一次「停」：三轴依次起停，中心符号仍是预设结果。"""
+        """按一次「停」：三轴同时起刹、阻力递增，中心符号仍是预设结果。"""
         dlg = _make_dialog(Reward(), result=(1, 3, 1))
         got: list[SlotPrizes] = []
         dlg.prize_decided.connect(got.append)
@@ -360,8 +382,12 @@ class SlotMachineDialogTests(_SfxInjection):
         self.assertTrue(
             dlg._reels[0].is_stopping(), "第一轴应立即开始停",
         )
-        self.assertFalse(
-            dlg._reels[2].is_stopping(), "第三轴应延迟 600ms 才起停",
+        self.assertTrue(
+            dlg._reels[2].is_stopping(), "第三轴也应同帧起刹（不再延迟）",
+        )
+        self.assertGreater(
+            dlg._reels[2]._zone_override, dlg._reels[0]._zone_override,
+            "第三轴减速区更宽 → 落定更晚",
         )
         _wait_result(dlg)
         self.assertEqual(
