@@ -21,7 +21,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from .branding import window_title
 from .models import Inventory, Reward
-from .ui_styles import BG_CARD, BORDER, DARK_BASE_QSS, TEXT_MUTED
+from .ui_styles import DARK_BASE_QSS, TEXT_MUTED
 from .ui_text import format_amount, format_reward_gain
 
 SLOT_QSS = DARK_BASE_QSS + f"""
@@ -102,6 +102,15 @@ _SYM_COLOR = {
 }
 _SYM_COLOR_Q = {k: QColor(v) for k, v in _SYM_COLOR.items()}
 
+# 白鼓上的深色版符号色：亮色在白底对比度不足（<2.2:1），必须换深色。
+_SYM_COLOR_ON_LIGHT = {
+    _SYM_COIN: "#8a6400",
+    _SYM_DIAMOND: "#0b6e96",
+    _SYM_LETTER: "#1f7a45",
+    _SYM_NOTE: "#6b3fc0",
+}
+_SYM_COLOR_LIGHT_Q = {k: QColor(v) for k, v in _SYM_COLOR_ON_LIGHT.items()}
+
 # 转轮上直接显示的 emoji（键盘可直接输入）。
 _SYM_EMOJI = {
     _SYM_COIN: "\U0001F4B0",            # 💰 金币（Unicode 6.0，Win7+ 均有）
@@ -164,7 +173,16 @@ _REEL_W = 76
 _REEL_H = 108
 _VISIBLE_ROWS = 3         # 每轴可见 3 格，中心行为准
 _DRUM_SLOTS = 10          # 圆鼓一圈格数（同 Vue 每轴 10 格 → 36°/格）
-_DRUM_EDGE_DIM = 0.40     # 转到侧面的格压暗到 40%（正面 100%），强化圆柱纵深
+# 以下四项直接取自参考实现 SlotMachine.vue / Gift.vue 的 .gift-style：
+# 象牙白鼓面 + 深蓝字 + 仅横向 1px 分格线（无左右描边、无圆角）。
+_DRUM_BG = "#f5f2e2"       # background-color: #f5f2e2
+_DRUM_TEXT = "#09384e"     # color: #09384e
+_DRUM_LINE = "#333333"     # border-top / border-bottom: 1px solid #333
+_DRUM_HOUSING = "#0d0e14"  # 嵌框底色（比卡片更暗）→ 白鼓像从机身里挖出来
+# 窗口内阴影：参考实现用 ::before/::after 的 inset box-shadow 叠出上下暗角，
+# 纵深全靠这层渐隐黑，而不是给每格刷灰。
+_DRUM_SHADOW_DEPTH = 0.45  # 暗角高度占格高比例（参考 15px/200px ≈ 0.075 起渐隐）
+_DRUM_SHADOW_ALPHA = 110   # 暗角最深处的黑 alpha（0..255，参考 0.2+0.3 叠加）
 
 # 停轴时长与 Vue 版一致：三轴同帧起刹，落定时长依次 4s / 5s / 6s。
 # 距离由时长反推（见 _stop_min_dist），速度曲线见 _step_for_remaining。
@@ -184,7 +202,7 @@ _BLINK_MS = 400
 _BLINK_TOTAL = 5
 _NEAR_MISS_COLOR = "#ff9f43"
 _FLASH_RISE_MS = 150
-_FLASH_GLOW = 0.14
+_FLASH_GLOW = 0.22
 
 _NEAR_MISS_WEIGHTS = {
     _SYM_NOTE:    3,
@@ -619,17 +637,18 @@ class _ReelWidget(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         row_h = self.height() / _VISIBLE_ROWS
         # 圆鼓几何：格沿水平轴绕一圈排布，半径由「格高 + 每格夹角」反推，
-        # 等价于 Vue 的 rotateX + translateZ。格越靠边（cos 越小）越矮、越窄、越暗，
-        # 窗口上下沿正好是鼓面转到 90° 消失的位置——真机的"圆柱窗"观感。
+        # 等价于 Vue 的 rotateX + translateZ（参考实现 perspective 近无穷 →
+        # 正交投影，所以只压缩高度、不产生梯形畸变）。
         radius = row_h / 2.0 / math.tan(math.pi / _DRUM_SLOTS)
         step = 2.0 * math.pi / _DRUM_SLOTS
         center_y = self.height() / 2.0
         frac = 0.0 if self._stopped else self._offset - int(self._offset)
         has_flash = self._flash is not None and self._flash_strength > 0.0
         flash_color = QColor(self._flash) if has_flash else None
-        base_border = QColor(BORDER)
-        base_bg = QColor(BG_CARD)
-        black = QColor(0, 0, 0)
+        bg = QColor(_DRUM_BG)
+        line = QColor(_DRUM_LINE)
+        text_color = QColor(_DRUM_TEXT)
+        p.fillRect(self.rect(), QColor(_DRUM_HOUSING))
         p.save()
         p.setClipRect(self.rect())
         # nudge 为"想再滚一格"的向下推（正方向与滚向一致），整体位移鼓面
@@ -643,35 +662,29 @@ class _ReelWidget(QWidget):
                 continue
             cells.append((cos_a, row))
         cells.sort(key=lambda item: item[0])
+        width = float(self.width())
         for cos_a, row in cells:
             sym = self._symbol_at(row)
             ang = (row + frac) * step
-            h = max(2.0, row_h * cos_a - 2.0)
-            inset = (1.0 - cos_a) * row_h * 0.4
-            rect = QRectF(
-                4.0 + inset,
-                center_y + radius * math.sin(ang) - h / 2.0,
-                self.width() - 8.0 - inset * 2.0,
-                h,
-            )
-            # 只有正对中线的格参与中奖高亮：边框渐亮 + 符号色泛光底色
-            center_flash = has_flash and row == 0 and flash_color is not None
-            if center_flash:
-                border = _blend(base_border, flash_color, self._flash_strength)
-                glow_t = self._flash_strength * _FLASH_GLOW
-                bg = _blend(base_bg, _SYM_COLOR_Q[sym], glow_t)
+            h = max(1.0, row_h * cos_a)
+            top = center_y + radius * math.sin(ang) - h / 2.0
+            rect = QRectF(0.0, top, width, h)
+            # 参考实现里格与格之间只有一条横向 1px 线，没有左右描边、没有圆角，
+            # 整条鼓面因此是连续的一整片色带（而非一个个独立卡片）。
+            if has_flash and row == 0 and flash_color is not None:
+                cell_bg = _blend(bg, flash_color, self._flash_strength * _FLASH_GLOW)
+                line_color = _blend(
+                    line, _SYM_COLOR_LIGHT_Q[sym], self._flash_strength
+                )
                 pen_w = 2
             else:
-                dim = _DRUM_EDGE_DIM + (1.0 - _DRUM_EDGE_DIM) * cos_a
-                border = _blend(black, base_border, dim)
-                bg = _blend(black, base_bg, dim)
+                cell_bg = bg
+                line_color = line
                 pen_w = 1
-            p.setPen(QPen(border, pen_w))
-            p.setBrush(bg)
-            corner = min(6.0, h / 3.0)
-            p.drawRoundedRect(rect, corner, corner)
-            dim_text = _DRUM_EDGE_DIM + (1.0 - _DRUM_EDGE_DIM) * cos_a
-            p.setPen(_blend(black, QColor(_SYM_COLOR[sym]), dim_text))
+            p.fillRect(rect, cell_bg)
+            p.fillRect(QRectF(0.0, top, width, float(pen_w)), line_color)
+            # 字色统一深蓝（同参考实现单一字色），字号随 cos 收缩避免挤出格
+            p.setPen(text_color)
             size = (26 if row == 0 else 15) * cos_a
             if _emoji_usable(sym):
                 p.setFont(_emoji_font(max(7, int(size))))
@@ -681,6 +694,21 @@ class _ReelWidget(QWidget):
                     QFont("Microsoft YaHei UI", max(6, int(size)), QFont.Bold)
                 )
                 p.drawText(rect, Qt.AlignCenter, _SYM_CHAR[sym])
+        # 上下暗角：参考实现的 ::before/::after inset 阴影，压在所有格之上，
+        # 鼓面转到上下沿时自然沉进阴影里，这才是纵深的来源。
+        depth = row_h * _DRUM_SHADOW_DEPTH
+        top_grad = QLinearGradient(0.0, 0.0, 0.0, depth)
+        top_grad.setColorAt(0.0, QColor(0, 0, 0, _DRUM_SHADOW_ALPHA))
+        top_grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.fillRect(QRectF(0.0, 0.0, width, depth), top_grad)
+        bottom_grad = QLinearGradient(
+            0.0, self.height() - depth, 0.0, float(self.height())
+        )
+        bottom_grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+        bottom_grad.setColorAt(1.0, QColor(0, 0, 0, _DRUM_SHADOW_ALPHA))
+        p.fillRect(
+            QRectF(0.0, self.height() - depth, width, depth), bottom_grad
+        )
         p.restore()
         p.end()
 
