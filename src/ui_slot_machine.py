@@ -197,7 +197,9 @@ _SUSPENSE_STOP_SCALE = {
 _NORMAL_STEP = _SPIN_CELLS_PER_SEC * _TICK_MS / 1000.0  # 匀速每帧步长
 
 _NEAR_MISS_DELAY_MS = 300
-_NUDGE_H = 7
+_NUDGE_CELLS = 0.72      # 过冲格数：0.72 格≈28px，上格压到赔付线边缘但不完全进线
+_NUDGE_MS = 520          # 回弹总时长（含峰值停驻）
+_NUDGE_HOLD = 0.24       # 峰值停驻比例≈125ms，让"快三个一起"能被看清
 _BLINK_MS = 400
 _BLINK_TOTAL = 5
 _NEAR_MISS_COLOR = "#ff9f43"
@@ -233,12 +235,6 @@ _NEAR_MISS_BLINKS = {
     _SYM_DIAMOND: 7,
     _SYM_COIN:    5,
     _SYM_LETTER:  3,
-}
-_NEAR_MISS_NUDGES = {
-    _SYM_NOTE:    3,
-    _SYM_DIAMOND: 3,
-    _SYM_COIN:    2,
-    _SYM_LETTER:  0,
 }
 
 # 悬念轴（前两轴同号）：沿用同一套曲线，只是时长按符号再放大。
@@ -445,6 +441,10 @@ class _ReelWidget(QWidget):
     def start_spin(self) -> None:
         self._target = None
         self._stopped = False
+        # 上一轮若停在过冲位（近失回弹），新的一轮必须从整格起步，
+        # 否则残留的 _nudge 会和新的相位叠加成永久错位。
+        self._nudge = 0.0
+        self._offset = float(int(self._offset))
         self._flash = None
         self._flash_strength = 0.0
         self._suspense_sym = None
@@ -503,6 +503,14 @@ class _ReelWidget(QWidget):
             target = find(None, 1)
         if target is None:
             return
+        # 近失：落点再往前推 0.72 格，让鼓面停在"快三同"的过冲位上——赔付线
+        # 上方那格（缺失符号）压到几乎进线但没进。随后由 nudge 把它弹回整格，
+        # "多转一格再被弹回"才是"差一格"的物理本体，而不是停稳后再平移一下。
+        if (
+            graze_want is not None
+            and _PHYSICAL_STRIP[(int(target) + 1) % _PHYSICAL_LEN] == graze_want
+        ):
+            target += _NUDGE_CELLS
         self._target = target
         # 由「实际距离 + 目标时长」反解速度曲线指数 p：
         # v(r) = v0 * (r/D)^p，落定耗时 T = D / (v0 * (1-p))，令其等于 _stop_ms。
@@ -560,17 +568,26 @@ class _ReelWidget(QWidget):
             self._flash_anim.stop()
             self._flash_anim = None
 
-    def nudge(self, times: int = 2) -> None:
-        """近失"想再滚一格"：中心行向下轻推再弹回，重复 times 次。"""
+    def nudge(self) -> None:
+        """近失回弹：鼓面已停在"快三同"的过冲位（上格几乎进赔付线），
+        停驻一拍后被棘轮弹回整格，并小幅越过静止位再收住。"""
         if self._nudge_anim is not None:
             self._nudge_anim.stop()
-        anim = QPropertyAnimation(self, b"nudge", self)
-        anim.setDuration(180)
+            self._nudge_anim = None
+        # 属性名必须与下方 Property 的变量名 nudgeProp 一致：Qt 找不到属性时
+        # 不抛异常，只打一行 warning 然后空转，set_nudge 一次都不会被调用。
+        anim = QPropertyAnimation(self, b"nudgeProp", self)
+        anim.setDuration(_NUDGE_MS)
         anim.setStartValue(0.0)
-        anim.setKeyValueAt(0.35, 1.0)
-        anim.setEndValue(0.0)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.setLoopCount(times)
+        # 峰值停驻：0 → _NUDGE_HOLD 这一段值不变，等于"卡在那儿不动"
+        anim.setKeyValueAt(_NUDGE_HOLD, 0.0)
+        # 退回一格：慢起（棘轮释放）→ 加速 → 逼近整格时减速
+        anim.setKeyValueAt(0.40, -0.30)
+        anim.setKeyValueAt(0.56, -1.00)
+        # 越过静止位再收住，这一下"过头"是"不甘心"的来源
+        anim.setKeyValueAt(0.70, -1.14)
+        anim.setEndValue(-1.0)
+        anim.setEasingCurve(QEasingCurve.Linear)
         anim.start()
         self._nudge_anim = anim
 
@@ -591,6 +608,12 @@ class _ReelWidget(QWidget):
         if self._nudge_anim is not None:
             self._nudge_anim.stop()
             self._nudge_anim = None
+        # 停稳时 offset 停在整格 + 过冲量的位置上，回弹被打断（直接关窗）
+        # 必须把两者都归一，否则相位永久偏 0.72 格。
+        if self._stopped:
+            self._offset = float(int(self._offset))
+        self._nudge = 0.0
+        self.update()
 
     def stop_timer(self) -> None:
         self._timer.stop()
@@ -642,7 +665,9 @@ class _ReelWidget(QWidget):
         radius = row_h / 2.0 / math.tan(math.pi / _DRUM_SLOTS)
         step = 2.0 * math.pi / _DRUM_SLOTS
         center_y = self.height() / 2.0
-        frac = 0.0 if self._stopped else self._offset - int(self._offset)
+        # 停稳后 offset 可能停在"整格 + 过冲量"上（近失回弹的起点），
+        # 所以不能用 _stopped 直接把 frac 归零，否则回弹起点会整格跳一下。
+        frac = self._offset - int(self._offset)
         has_flash = self._flash is not None and self._flash_strength > 0.0
         flash_color = QColor(self._flash) if has_flash else None
         bg = QColor(_DRUM_BG)
@@ -651,13 +676,15 @@ class _ReelWidget(QWidget):
         p.fillRect(self.rect(), QColor(_DRUM_HOUSING))
         p.save()
         p.setClipRect(self.rect())
-        # nudge 为"想再滚一格"的向下推（正方向与滚向一致），整体位移鼓面
-        p.translate(0.0, self._nudge * _NUDGE_H)
+        # 回弹走旋转而非整体平移：平移会把鼓面连同暗角一起推出机身窗口，
+        # 整块画面同步位移、没有静止参照物，就完全看不出来。
+        # _nudge 是"从过冲位退回的格数"（0 → -1），落定后 phase 回到整格。
+        phase = frac + self._nudge * _NUDGE_CELLS
         # 由远及近绘制：侧面格先画，正面格压在最上层
         cells = []
         span = _DRUM_SLOTS // 2
         for row in range(-span, span + 1):
-            cos_a = math.cos((row + frac) * step)
+            cos_a = math.cos((row + phase) * step)
             if cos_a <= 0.02:
                 continue
             cells.append((cos_a, row))
@@ -665,7 +692,7 @@ class _ReelWidget(QWidget):
         width = float(self.width())
         for cos_a, row in cells:
             sym = self._symbol_at(row)
-            ang = (row + frac) * step
+            ang = (row + phase) * step
             h = max(1.0, row_h * cos_a)
             top = center_y + radius * math.sin(ang) - h / 2.0
             rect = QRectF(0.0, top, width, h)
@@ -784,9 +811,9 @@ class SlotMachineDialog(QDialog):
         reels_row.setSpacing(10)
         reels_row.addStretch(1)
         self._reels: List[_ReelWidget] = []
-        for _ in range(3):
+        for index in range(3):
             reel = _ReelWidget(self)
-            reel.stopped.connect(self._on_reel_stopped)
+            reel.stopped.connect(lambda i=index: self._on_reel_stopped(i))
             self._reels.append(reel)
             reels_row.addWidget(reel)
         reels_row.addStretch(1)
@@ -879,12 +906,16 @@ class SlotMachineDialog(QDialog):
         fallback.start(_AUTO_STOP_FALLBACK_MS)
         self._stop_timers.append(fallback)
 
-    def _on_reel_stopped(self) -> None:
+    def _on_reel_stopped(self, index: int = -1) -> None:
         if self._finalized:
             return
         sfx = _get_sfx()
         if sfx is not None:
             sfx.play_slot_reel_stop()
+        if index == 2 and self._has_near_miss():
+            # 第三轴刚停在"快三同"的过冲位，回弹必须紧接落定，不能等揭晓：
+            # 落定 → 停驻一拍 → 被棘轮弹回一格，是一段连续运动。
+            self._reels[2].nudge()
         self._stopped_count += 1
         if self._stopped_count >= 3:
             if sfx is not None:
@@ -961,7 +992,7 @@ class SlotMachineDialog(QDialog):
         return "\n".join(lines)
 
     def _reveal_near_miss(self) -> None:
-        """近失揭晓：按符号权重分级音效/nudge/闪烁。"""
+        """近失揭晓：按符号权重分级音效/闪烁（回弹已在落定时触发）。"""
         if self._finalized or not self._near_miss_active:
             return
         pair_sym = near_miss_symbol(self._result)
@@ -976,11 +1007,6 @@ class SlotMachineDialog(QDialog):
                 sfx.play_slot_near_miss()
         elif sfx is not None:
             sfx.play_slot_near_miss()
-        if pair_sym is not None:
-            nudge_times = _NEAR_MISS_NUDGES.get(pair_sym, 2)
-            for i, s in enumerate(self._result):
-                if s == pair_sym:
-                    self._reels[i].nudge(times=nudge_times)
         if pair_sym is not None:
             text = _NEAR_MISS_TEXTS.get(pair_sym, "差一点！")
             self._near_miss_label.setText(text)
