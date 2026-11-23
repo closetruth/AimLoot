@@ -270,32 +270,46 @@ class SfxGridFullTests(unittest.TestCase):
 
 
 class SfxSlotTests(unittest.TestCase):
-    """老虎机音效：循环转轮声可停、停轴咔哒、中奖/近失短音。"""
+    """老虎机音效：三轴放映机循环可逐轴停、停轴咔哒、中奖/近失短音。"""
 
     def _player_with_slot_sounds(self) -> SfxPlayer:
         _install_sounds(
             self,
             [
-                "slot_spin.wav",
+                "slot_spin_a.wav",
+                "slot_spin_b.wav",
+                "slot_spin_c.wav",
                 "reel_stop.wav",
+                "reel_tick.wav",
                 "slot_win.wav",
                 "near_miss.wav",
             ],
         )
         return _forced_player()
 
-    def test_spin_loops_on_slot_lane_and_stops(self) -> None:
+    def test_three_axes_spin_independently_and_stop_per_axis(self) -> None:
         sfx = self._player_with_slot_sounds()
         self.addCleanup(sfx.shutdown)
-        sfx.play_slot_spin()
-        voice = sfx._exclusive.get("slot")
-        self.assertIsNotNone(voice, "转轮声应占 slot 独占声道")
-        self.assertEqual(voice.loops, -1, "转轮声应循环播放")
-        src = Path(voice.player.source().toLocalFile()).name
-        self.assertEqual(src, "slot_spin.wav")
+        for axis in range(3):
+            sfx.play_slot_spin(axis)
+        for axis, lane in enumerate(("slot0", "slot1", "slot2")):
+            voice = sfx._exclusive.get(lane)
+            self.assertIsNotNone(voice, f"第 {axis} 轴应有独占声道")
+            self.assertEqual(voice.loops, -1, "放映机应循环播放")
+            src = Path(voice.player.source().toLocalFile()).name
+            self.assertEqual(src, f"slot_spin_{'abc'[axis]}.wav")
+        self.assertEqual(sfx._slot_axes, {0, 1, 2})
+
+        sfx.stop_slot_spin(1)
+        self.assertFalse(sfx._exclusive["slot1"].busy, "停第 2 轴后该声道应空闲")
+        self.assertEqual(sfx._slot_axes, {0, 2}, "停一轴不应影响另外两轴")
+        self.assertTrue(sfx._exclusive["slot0"].busy)
+        self.assertTrue(sfx._exclusive["slot2"].busy)
+
         sfx.stop_slot_spin()
-        self.assertFalse(voice.busy, "stop 后声道应空闲")
-        self.assertFalse(sfx._slot_active)
+        self.assertEqual(sfx._slot_axes, set())
+        self.assertFalse(sfx._exclusive["slot0"].busy)
+        self.assertFalse(sfx._exclusive["slot2"].busy)
 
     def test_stop_without_spin_is_noop(self) -> None:
         sfx = self._player_with_slot_sounds()

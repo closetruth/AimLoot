@@ -78,14 +78,17 @@ class _RecordingSfx:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def play_slot_spin(self) -> None:
+    def play_slot_spin(self, axis: int = 0) -> None:
         self.calls.append("spin")
 
-    def stop_slot_spin(self) -> None:
+    def stop_slot_spin(self, axis: int | None = None) -> None:
         self.calls.append("stop")
 
     def play_slot_reel_stop(self) -> None:
         self.calls.append("reel")
+
+    def play_slot_reel_tick(self) -> None:
+        self.calls.append("tick")
 
     def play_slot_win(self) -> None:
         self.calls.append("win")

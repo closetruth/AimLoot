@@ -25,7 +25,12 @@ _DIAMOND_STEM = "roll_diamond"
 _GRID_STEM = "grid_full"
 _CHEST_STEM = "chest_get"
 _SLOT_SPIN_STEM = "slot_spin"
+# 三轴各一台放映机：文件名 slot_spin_a/b/c。三台转速与共振都错开，
+# 叠在一起才是"三轴在转"，停一轴就停一台，声音随之逐轴减少。
+_SLOT_AXIS_STEMS = ("slot_spin_a", "slot_spin_b", "slot_spin_c")
+_SLOT_AXIS_LANES = ("slot0", "slot1", "slot2")
 _SLOT_REEL_STOP_STEM = "reel_stop"
+_SLOT_REEL_TICK_STEM = "reel_tick"
 _SLOT_WIN_STEM = "slot_win"
 _SLOT_NEAR_MISS_STEM = "near_miss"
 _SLOT_NEAR_MISS_HIGH_STEM = "near_miss_high"
@@ -94,6 +99,7 @@ def _probe_sound_files() -> bool:
         or _stem_exists(_DIAMOND_STEM)
         or _stem_exists(_GRID_STEM)
         or _stem_exists(_CHEST_STEM)
+        or any(_stem_exists(stem) for stem in _SLOT_AXIS_STEMS)
         or _stem_exists(_SLOT_SPIN_STEM)
     ):
         return True
@@ -214,7 +220,8 @@ class SfxPlayer(QObject):
         self._skip: set[str] = set()
         self._folder_cache: Dict[str, List[Path]] = {}
         self._prewarm_timer: Optional[QTimer] = None
-        self._slot_active = False
+        # 三轴各自一台放映机，记哪些轴还在转：停一轴只停那一台。
+        self._slot_axes: set[int] = set()
         self._bgm_player: Optional[object] = None
         self._bgm_output: Optional[object] = None
         self._bgm_name: str = ""
@@ -406,22 +413,29 @@ class SfxPlayer(QObject):
             return
         self._play_exclusive("aim", path)
 
-    def play_slot_spin(self) -> None:
-        """老虎机开转：循环转轮声，弹窗关闭时调用 stop_slot_spin。"""
-        if not self.capable():
+    def play_slot_spin(self, axis: int = 0) -> None:
+        """某轴开转：该轴独占一台放映机循环声。
+
+        三轴各一台、参数错开，所以三轴同时在转时是三重奏而不是同一个音叠三遍。
+        停一轴就停那一台（见 stop_slot_spin），声音随轴数递减。
+        """
+        if not self.capable() or not 0 <= axis < len(_SLOT_AXIS_STEMS):
             return
-        path = _find_stem(_SLOT_SPIN_STEM)
+        path = _find_stem(_SLOT_AXIS_STEMS[axis])
         if path is None:
             return
-        self._slot_active = True
-        self._play_exclusive("slot", path, volume_scale=0.7, loops=-1)
+        self._slot_axes.add(axis)
+        # 放映机只是背景铺底：压到 0.45，让它垫在中奖/近失音效之下。
+        self._play_exclusive(_SLOT_AXIS_LANES[axis], path, volume_scale=0.45, loops=-1)
 
-    def stop_slot_spin(self) -> None:
-        """停转轮循环声（未在转时 no-op）。"""
-        if not self._slot_active:
-            return
-        self._slot_active = False
-        self._stop_lane("slot")
+    def stop_slot_spin(self, axis: Optional[int] = None) -> None:
+        """停某轴放映机；axis=None 时三轴全停（弹窗关闭/结算兜底）。"""
+        axes = tuple(self._slot_axes) if axis is None else (axis,)
+        for i in axes:
+            if i not in self._slot_axes:
+                continue
+            self._slot_axes.discard(i)
+            self._stop_lane(_SLOT_AXIS_LANES[i])
 
     def play_slot_reel_stop(self) -> None:
         """单轴停稳：短促咔哒。"""
@@ -431,6 +445,15 @@ class SfxPlayer(QObject):
         if path is None:
             return
         self._play("reel", path)
+
+    def play_slot_reel_tick(self) -> None:
+        """减速段过一格：轻卡榫。只在相邻两声能分开时由鼓面 emit（见 _TICK_SOUND_STEP）。"""
+        if not self.capable():
+            return
+        path = _find_stem(_SLOT_REEL_TICK_STEM)
+        if path is None:
+            return
+        self._play("reel", path, volume_scale=0.55)
 
     def play_slot_win(self) -> None:
         """三个轴停稳且中奖：中奖短音。"""
@@ -664,7 +687,7 @@ class SfxPlayer(QObject):
         self._busy_order.clear()
         self._exclusive.clear()
         self._folder_cache.clear()
-        self._slot_active = False
+        self._slot_axes.clear()
 
     def _prewarm_now(self) -> None:
         if not self.capable():

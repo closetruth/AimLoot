@@ -195,6 +195,9 @@ _SUSPENSE_STOP_SCALE = {
     _SYM_LETTER:  1.15,
 }
 _NORMAL_STEP = _SPIN_CELLS_PER_SEC * _TICK_MS / 1000.0  # 匀速每帧步长
+# 减速段过格声的速度阈值（格/帧）：低于此值相邻两声才能分开听。
+# 0.11 格/帧 ≈ 6.9 格/秒；高于它时 18 格/秒的敲击会糊成嗡鸣。
+_TICK_SOUND_STEP = 0.11
 
 _NEAR_MISS_DELAY_MS = 300
 _NUDGE_CELLS = 0.72      # 过冲格数：0.72 格≈28px，上格压到赔付线边缘但不完全进线
@@ -418,6 +421,8 @@ class _ReelWidget(QWidget):
     """单轴转轮：60fps 浮点连续滚动，阻尼式减速停稳在目标符号上。"""
 
     stopped = Signal()
+    # 减速段过格：每秒 ≤7 格时才 emit，此时相邻两声能分开听（见 _TICK_SOUND_STEP）。
+    cell_crossed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -628,7 +633,12 @@ class _ReelWidget(QWidget):
         step = self._step_for_remaining(remaining)
         # 取 min 精确落格：最后一帧不吸附、不跳像素
         step = min(step, remaining)
+        prev_cell = int(self._offset)
         self._offset += step
+        # 高速段的过格声会糊成 18Hz 嗡鸣（主流机台此时只有气流声），
+        # 只在速度降到每秒几格、每格都数得清时才响，才是真机的"哒…哒…咔"。
+        if step < _TICK_SOUND_STEP and int(self._offset) != prev_cell:
+            self.cell_crossed.emit()
         if self._offset >= self._target - 1e-9:
             self._halt()
             return
@@ -814,6 +824,7 @@ class SlotMachineDialog(QDialog):
         for index in range(3):
             reel = _ReelWidget(self)
             reel.stopped.connect(lambda i=index: self._on_reel_stopped(i))
+            reel.cell_crossed.connect(self._on_reel_cell_tick)
             self._reels.append(reel)
             reels_row.addWidget(reel)
         reels_row.addStretch(1)
@@ -892,8 +903,9 @@ class SlotMachineDialog(QDialog):
 
     def _start_spin(self) -> None:
         sfx = _get_sfx()
-        if sfx is not None:
-            sfx.play_slot_spin()
+        for i in range(3):
+            if sfx is not None:
+                sfx.play_slot_spin(i)
         for reel in self._reels:
             reel.start_spin()
         self._stopped_count = 0
@@ -906,12 +918,24 @@ class SlotMachineDialog(QDialog):
         fallback.start(_AUTO_STOP_FALLBACK_MS)
         self._stop_timers.append(fallback)
 
+    def _on_reel_cell_tick(self) -> None:
+        """减速段每过一格一声轻卡榫：三轴同时减速，天然形成交错的"哒哒"。"""
+        if self._finalized:
+            return
+        sfx = _get_sfx()
+        if sfx is not None:
+            sfx.play_slot_reel_tick()
+
     def _on_reel_stopped(self, index: int = -1) -> None:
         if self._finalized:
             return
         sfx = _get_sfx()
         if sfx is not None:
             sfx.play_slot_reel_stop()
+            # 停一轴就停那一台的放映机：三轴的放映机声随之逐轴减少，
+            # 全部停稳时自然静音，不需要再统一收尾。
+            if index >= 0:
+                sfx.stop_slot_spin(index)
         if index == 2 and self._has_near_miss():
             # 第三轴刚停在"快三同"的过冲位，回弹必须紧接落定，不能等揭晓：
             # 落定 → 停驻一拍 → 被棘轮弹回一格，是一段连续运动。
