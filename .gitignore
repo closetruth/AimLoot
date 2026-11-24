@@ -44,5 +44,6 @@ data.json
 assets/sounds/ease/*.mp3
 assets/sounds/aim/*.mp3
 
-# 
-.superpowers
+# AI / 工具过程产物
+.cursor/
+.superpowers/

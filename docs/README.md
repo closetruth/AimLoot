@@ -11,6 +11,7 @@
 | 🌲 [../README.md](../README.md) | 功能、安装、使用、隐私 |
 | 📝 [../RELEASE_NOTES.md](../RELEASE_NOTES.md) | 各版本变更（当前 v1.0.8） |
 | 🎬 [Adventure_min_show.mp4](Adventure_min_show.mp4) | 本地演示视频 |
+| 🖥️ [index.html](index.html) | 演示视频下载页（本地打开即可） |
 | 🔊 [../README.md#音效可选](../README.md#音效可选) | 音效需自行放入 `assets/sounds/` |
 
 ---

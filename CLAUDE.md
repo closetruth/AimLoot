@@ -27,6 +27,9 @@ fix_game.bat
 REM Build redistributable .exe
 build.bat
 
+REM Regenerate slot machine sounds into assets/sounds/ (needs ffmpeg)
+python tools/gen_slot_sounds.py
+
 REM Run unit tests (stdlib unittest, offscreen UI regression included)
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```

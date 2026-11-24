@@ -266,6 +266,7 @@ AimLoot/
 │   ├── pixel_tactics.py    # 像素格子战场
 │   └── word_arena.py       # 词汇自走棋
 ├── tests/                  # unittest
+├── tools/                  # 离线音效合成（gen_slot_sounds.py，需 ffmpeg）
 └── src/
     ├── main.py · widget.py · models.py · storage.py
     ├── task_manager.py · task_dialog.py · inventory_dialog.py
