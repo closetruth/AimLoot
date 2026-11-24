@@ -26,6 +26,75 @@ _HARM = {
 }
 
 
+def _mix(dst: list, src: list, offset: float = 0.0, gain: float = 1.0) -> None:
+    start = max(0, int(offset * SR))
+    for i, v in enumerate(src):
+        idx = start + i
+        if idx >= len(dst):
+            break
+        dst[idx] += v * gain
+
+
+def _soft_limit(v: float) -> float:
+    """tanh 软限幅：超过 1.0 的部分被平滑压住，而不是削成平顶（平顶=刺耳）。"""
+    return math.tanh(v * 1.1) / math.tanh(1.1)
+
+
+def _to_bytes(samples: list, peak: float = PEAK) -> bytes:
+    peak_val = max((abs(v) for v in samples), default=0.0)
+    if peak_val <= 1e-9:
+        return b"\x00\x00" * len(samples)
+    scale = 1.0 / peak_val
+    out = bytearray()
+    for v in samples:
+        s = _soft_limit(v * scale) * peak
+        q = int(round(s * 32767 + random.uniform(-0.5, 0.5)))
+        q = -32768 if q < -32768 else (32767 if q > 32767 else q)
+        out += struct.pack("<h", q)
+    return bytes(out)
+
+
+def _write(path: str, samples: list, peak: float = PEAK) -> None:
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(_to_bytes(samples, peak))
+
+
+def _write_raw(path: str, samples: list, rms_dbfs: float = -24.0,
+               knee: float = 0.85, ceiling: float = 0.92) -> None:
+    """按 RMS 定响度，只对越过膝点的极少数尖峰做软膝压缩。
+
+    真实录音的 crest 很高（稀疏尖峰 + 很低的底噪），三轴切到的段落 crest
+    还各不相同（实测 24–28dB）。若按峰值归一化，三轴 RMS 会差到 4dB，
+    叠播时听得出"某一轴更响"；而全程软限幅又会削掉 tick 的瞬态。
+    所以这里先按 RMS 定标（三轴持续响度一致），再只把超过 knee 的尖峰
+    用指数曲线压向 ceiling——实测受影响的样本不到 0.01%、能量损失 <0.2%，
+    瞬态形状基本保留。
+    """
+    rms = math.sqrt(sum(v * v for v in samples) / len(samples)) if samples else 0.0
+    if rms <= 1e-12:
+        return
+    k = (10.0 ** (rms_dbfs / 20.0)) / rms
+    span = max(1e-6, ceiling - knee)
+
+    def shape(s: float) -> float:
+        a = abs(s)
+        if a <= knee:
+            return s
+        return math.copysign(min(knee + span * (1.0 - math.exp(-(a - knee) / span)), ceiling), s)
+
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(b"".join(
+            struct.pack("<h", int(round(shape(v * k) * 32767)))
+            for v in samples
+        ))
+
+
 def _note(
     freq: float,
     dur: float,
@@ -75,169 +144,12 @@ def _noise_burst(dur: float, *, cutoff: float = 0.35, decay: float = 90.0) -> li
     return out
 
 
-def _noise_loop(length: int, alpha: float, *, lowpass: bool = False, xfade: int = 1200) -> list:
-    """可循环噪声：一阶滤波后把尾部交叉淡入头部，接缝处没有跳变。
-
-    alpha 越小频带越窄：低通留下"隆隆"，高通留下"嘶"。
-    """
-    raw = [random.uniform(-1.0, 1.0) for _ in range(length + xfade)]
-    out = [0.0] * (length + xfade)
-    y = 0.0
-    for i, v in enumerate(raw):
-        y += alpha * (v - y)
-        out[i] = y if lowpass else v - y
-    # 交叉淡化：让 out[0] 接过 out[length-1] 之后的走势，循环点就听不出接缝。
-    for i in range(xfade):
-        w = i / xfade
-        out[i] = out[i] * w + out[length + i] * (1.0 - w)
-    buf = out[:length]
-    peak = max((abs(v) for v in buf), default=0.0)
-    return [v / peak for v in buf] if peak > 1e-9 else buf
-
-
-def _click_burst(dur: float, *, a_hp: float = 0.22, a_lp: float = 0.45,
-                 decay: float = 320.0) -> list:
-    """抓片击发：带通噪声短簇。
-
-    实测参照录音的抓片声集中在 2–4kHz（"亮"但不"刺"），所以这里做
-    高通 + 两级低通的带通，而不是纯高通——纯高通会把能量一路铺到 22kHz，
-    8kHz 以上全是刺耳的"嘶"，实测参照在 8kHz 以上只剩 9%。
-    """
-    n = max(1, int(SR * dur))
-    out = [0.0] * n
-    yh = 0.0
-    y1 = 0.0
-    y2 = 0.0
-    for i in range(n):
-        w = random.uniform(-1.0, 1.0)
-        yh += a_hp * (w - yh)
-        hp = w - yh
-        y1 += a_lp * (hp - y1)
-        y2 += a_lp * (y1 - y2)
-        out[i] = y2 * math.exp(-(i / SR) * decay)
-    return out
-
-
-def _noise_band(length: int, a_hp: float, a_lp: float, *, poles: int = 2,
-                xfade: int = 1200) -> list:
-    """带通噪声：一阶高通 + 多级一阶低通，尾部交叉淡入头部可无缝循环。
-
-    放映机气流是"带通"的：太低没有沙沙感，太高会变成刺耳的"嘶"。
-    实测参照在 4–8kHz 见顶、8kHz 以上快速衰减，所以低通级数要够。
-    """
-    n = length + xfade
-    raw = [random.uniform(-1.0, 1.0) for _ in range(n)]
-    yh = 0.0
-    hp = [0.0] * n
-    for i, v in enumerate(raw):
-        yh += a_hp * (v - yh)
-        hp[i] = v - yh
-    stages = [0.0] * poles
-    bp = [0.0] * n
-    for i, v in enumerate(hp):
-        s = v
-        for k in range(poles):
-            stages[k] += a_lp * (s - stages[k])
-            s = stages[k]
-        bp[i] = s
-    for i in range(xfade):
-        w = i / xfade
-        bp[i] = bp[i] * w + bp[length + i] * (1.0 - w)
-    buf = bp[:length]
-    peak = max((abs(v) for v in buf), default=0.0)
-    return [v / peak for v in buf] if peak > 1e-9 else buf
-
-
-def _rms_norm(buf: list, target: float = 1.0) -> list:
-    """按 RMS 归一化。
-
-    共鸣梳是多条正弦随机相位叠加，峰值随相位关系大幅波动（同样 24 条线，
-    相位对齐时峰值能差好几倍）。若按峰值归一化，三轴会一轴比一轴响 3dB，
-    听得出"某一轴更吵"。按 RMS 归一化后三轴的持续响度才真正一致。
-    """
-    rms = math.sqrt(sum(v * v for v in buf) / len(buf)) if buf else 0.0
-    if rms <= 1e-12:
-        return buf
-    k = target / rms
-    return [v * k for v in buf]
-
-
-def _projector(
-    rate_hz: float = 25.0,
-    *,
-    detune: float = 1.0,
-    seed: int = 0,
-) -> list:
-    """35mm 放映机循环声，参数对齐实测录音（freesound 79606）。
-
-    实测该录音的三个硬特征，决定了这里的配方：
-      1. 能量 60% 落在 2–16kHz：这是"亮而沙"的气流/齿隙噪声，不是低频轰鸣。
-         所以主体是宽带高频嘶声，低频只留 1% 量级的极轻隆隆。
-      2. 抓片节奏 24.96Hz（包络自相关 40ms 处 r=0.714）：每格一记短击发。
-      3. 频谱主峰是 50Hz（= 2×片速，遮光器）的谐波梳：150/350/450/600/700/
-         850/1100Hz，即机身多模态共鸣。用连续正弦梳复现这些窄线。
-
-    抓片、遮光、共鸣全部对齐循环基频，整段首尾严格连续。
-    """
-    random.seed(20260101 + seed)
-    P = int(round(SR / rate_hz))
-    n_cycles = 75          # ≈3s 循环：够长，噪声纹理不会每 0.8s 就重复一次
-    L = P * n_cycles
-    f0 = SR / L
-    base = 2.0 * rate_hz * detune   # 遮光器 = 2×片速 ≈ 50Hz，即谐波梳基频
-
-    def snap(f: float) -> float:
-        return max(f0, round(f / f0) * f0)
-
-    # 1) 机身共鸣梳：连续正弦，频率落在 50Hz 的整数倍上，得到实测的窄峰。
-    #    幅度配方按实测拟合：低频段（150–250Hz）有一个弱隆起，700Hz 附近最强
-    #    （实测 600/850Hz 是最大的两条线），高次再回落。
-    comb = [0.0] * L
-    for k in range(1, 25):
-        f = snap(k * base)
-        amp = (
-            0.38
-            + 0.62 * math.exp(-(((f) - 720.0) / 300.0) ** 2)
-            + 0.28 * math.exp(-((f - 180.0) / 150.0) ** 2)
-        )
-        ph = random.random() * 2.0 * math.pi
-        step = 2.0 * math.pi * f / SR
-        for i in range(L):
-            comb[i] += amp * math.sin(ph + step * i)
-    comb = _rms_norm(comb)
-
-    # 2) 爪牙抓片：每格一记亮噪声短簇，构成 25Hz 主脉冲
-    click = [0.0] * L
-    burst = _click_burst(0.006, a_hp=0.25, a_lp=0.45, decay=320.0)
-    bl = len(burst)
-    for c in range(n_cycles):
-        pos = c * P
-        for j in range(bl):
-            click[(pos + j) % L] += burst[j]
-    pk = max((abs(v) for v in click), default=0.0) or 1.0
-    click = [v / pk for v in click]
-
-    # 3) 遮光器气流：带通嘶声（≈1kHz 起、4kHz 见顶后 12dB/oct 衰减），
-    #    被 50Hz 双叶频闪调制（实测包络在 50/100Hz 也有峰）。
-    hiss = _noise_band(L, 0.13, 0.57, poles=2)
-    for i in range(L):
-        shutter = 0.5 - 0.5 * math.cos(2.0 * math.pi * 2.0 * rate_hz * i / SR)
-        hiss[i] *= 0.55 + 0.45 * shutter
-    hiss = _rms_norm(hiss)
-
-    # 4) 片门/机箱低频：实测极轻（20–120Hz 合计仅 1.2%），只做一点点重量
-    rumble = _noise_loop(L, 0.02, lowpass=True)
-    rumble = _rms_norm(rumble)
-
-    # 实测参照 crest 19dB：嘶声压得低、抓片瞬态尖，所以抓片权重高于嘶声。
-    out = [0.0] * L
-    for i in range(L):
-        out[i] = (
-            hiss[i] * 0.50
-            + click[i] * 0.95
-            + comb[i] * 0.26
-            + rumble[i] * 0.04
-        )
+def _reel_stop(freq: float = 1900.0, dur: float = 0.16) -> list:
+    """停轴咔哒：噪声击发 + 金属共鸣尾 + 低频"咔"。"""
+    out = [0.0] * int(SR * dur)
+    _mix(out, _noise_burst(0.012, cutoff=0.35, decay=90.0), 0.0, 0.55)
+    _mix(out, _note(freq, dur, _HARM["metal"], attack=0.002, decay=9.0, release=0.03), 0.0, 0.90)
+    _mix(out, _note(180.0, 0.05, _HARM["thump"], attack=0.002, decay=22.0, release=0.01), 0.0, 0.32)
     return out
 
 
@@ -250,43 +162,6 @@ def _reel_tick(dur: float = 0.05) -> list:
     out = [0.0] * int(SR * dur)
     _mix(out, _noise_burst(0.004, cutoff=0.5, decay=150.0), 0.0, 0.45)
     _mix(out, _note(1700.0, dur, _HARM["metal"], attack=0.001, decay=48.0, release=0.006), 0.0, 0.50)
-    return out
-
-
-def _mix(dst: list, src: list, offset: float = 0.0, gain: float = 1.0) -> None:
-    start = max(0, int(offset * SR))
-    for i, v in enumerate(src):
-        idx = start + i
-        if idx >= len(dst):
-            break
-        dst[idx] += v * gain
-
-
-def _soft_limit(v: float) -> float:
-    """tanh 软限幅：超过 1.0 的部分被平滑压住，而不是削成平顶（平顶=刺耳）。"""
-    return math.tanh(v * 1.1) / math.tanh(1.1)
-
-
-def _to_bytes(samples: list, peak: float = PEAK) -> bytes:
-    peak_val = max((abs(v) for v in samples), default=0.0)
-    if peak_val <= 1e-9:
-        return b"\x00\x00" * len(samples)
-    scale = 1.0 / peak_val
-    out = bytearray()
-    for v in samples:
-        s = _soft_limit(v * scale) * peak
-        q = int(round(s * 32767 + random.uniform(-0.5, 0.5)))
-        q = -32768 if q < -32768 else (32767 if q > 32767 else q)
-        out += struct.pack("<h", q)
-    return bytes(out)
-
-
-def _reel_stop(freq: float = 1900.0, dur: float = 0.16) -> list:
-    """停轴咔哒：噪声击发 + 金属共鸣尾 + 低频"咔"。"""
-    out = [0.0] * int(SR * dur)
-    _mix(out, _noise_burst(0.012, cutoff=0.35, decay=90.0), 0.0, 0.55)
-    _mix(out, _note(freq, dur, _HARM["metal"], attack=0.002, decay=9.0, release=0.03), 0.0, 0.90)
-    _mix(out, _note(180.0, 0.05, _HARM["thump"], attack=0.002, decay=22.0, release=0.01), 0.0, 0.32)
     return out
 
 
@@ -347,15 +222,6 @@ def _suspense_heartbeat(dur: float = 1.8) -> list:
     return out
 
 
-def _projector_loop(rate_hz: float, seed_shift: int, detune: float) -> list:
-    """单台放映机的循环声，供三轴各用一台。
-
-    三轴必须是三个"不同"的放映机：片速、共振、气流相位全都错开，
-    否则三份完全相同的循环叠在一起会锁相成一团嗡鸣，听起来反而只有一台。
-    """
-    return _projector(rate_hz, detune=detune, seed=seed_shift)
-
-
 def _decode_source(path: str) -> list:
     """用 ffmpeg 把参照录音解成 44.1kHz 单声道浮点样本。"""
     import shutil
@@ -378,7 +244,7 @@ def _decode_source(path: str) -> list:
 
 
 def _measure_period(x: list, start: int, span: int,
-                    lo_s: float = 0.060, hi_s: float = 0.800) -> float:
+                    lo_s: float, hi_s: float) -> float:
     """在指定区间内实测事件周期（样本数，浮点）。
 
     参照录音的转速并不恒定：整段平均与局部会差好几毫秒。若用全局平均
@@ -421,6 +287,32 @@ def _measure_period(x: list, start: int, span: int,
     return lag * hop
 
 
+def _probe_pair_period(x: list) -> float:
+    """实测 tick-tock 的**对周期**（tick+tock 一轮，样本数）。
+
+    tick 与 tock 音色不同，所以包络自相关在单事件间隔处较弱、
+    在一整对处最强——长区间搜索锁到的就是"对周期"。
+    搜索 40–600ms 覆盖常见机械钟/转轮的速率，不依赖外部假设的 BPM。
+    """
+    return _measure_period(x, 0, min(len(x), int(2.5 * SR)), 0.040, 0.600)
+
+
+def _quiet_start(x: list, start: int, period: float) -> int:
+    """把循环起点挪到一个对周期内包络最低处（tick 与 tock 之间的间隙）。
+
+    整数对周期仍可能有毫秒级误差，循环点若落在事件上就会听到"半声"；
+    落在间隙里，即使相位略有偏差，接缝也是安静的。
+    """
+    hop = 64
+    end = min(len(x), start + max(hop, int(round(period * 0.8))))
+    best_i, best_e = start, None
+    for i in range(start, end - hop + 1, hop):
+        e = sum(v * v for v in x[i:i + hop])
+        if best_e is None or e < best_e:
+            best_e, best_i = e, i
+    return best_i
+
+
 def _seamless_loop(x: list, start: int, period: float, periods: int,
                    xfade: int) -> list:
     """从录音取整数个事件周期，把尾部交叉淡入头部做成无缝循环。
@@ -451,65 +343,6 @@ def _resample(x: list, ratio: float) -> list:
         b = x[j + 1] if j + 1 < len(x) else x[0]
         out[i] = a + (b - a) * f
     return out
-
-
-def _write_raw(path: str, samples: list, rms_dbfs: float = -24.0,
-               knee: float = 0.85, ceiling: float = 0.92) -> None:
-    """按 RMS 定响度，只对越过膝点的极少数尖峰做软膝压缩。
-
-    真实录音的 crest 很高（稀疏尖峰 + 很低的底噪），三轴切到的段落 crest
-    还各不相同（实测 24–28dB）。若按峰值归一化，三轴 RMS 会差到 4dB，
-    叠播时听得出"某一轴更响"；而全程软限幅又会削掉 tick 的瞬态。
-    所以这里先按 RMS 定标（三轴持续响度一致），再只把超过 knee 的尖峰
-    用指数曲线压向 ceiling——实测受影响的样本不到 0.01%、能量损失 <0.2%，
-    瞬态形状基本保留。
-    """
-    rms = math.sqrt(sum(v * v for v in samples) / len(samples)) if samples else 0.0
-    if rms <= 1e-12:
-        return
-    k = (10.0 ** (rms_dbfs / 20.0)) / rms
-    span = max(1e-6, ceiling - knee)
-
-    def shape(s: float) -> float:
-        a = abs(s)
-        if a <= knee:
-            return s
-        return math.copysign(min(knee + span * (1.0 - math.exp(-(a - knee) / span)), ceiling), s)
-
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        w.writeframes(b"".join(
-            struct.pack("<h", int(round(shape(v * k) * 32767)))
-            for v in samples
-        ))
-
-
-def _probe_pair_period(x: list) -> float:
-    """实测 tick-tock 的**对周期**（tick+tock 一轮，样本数）。
-
-    tick 与 tock 音色不同，所以包络自相关在单事件间隔处较弱、
-    在一整对处最强——长区间搜索锁到的就是"对周期"。
-    搜索 40–600ms 覆盖常见机械钟/转轮的速率，不依赖外部假设的 BPM。
-    """
-    return _measure_period(x, 0, min(len(x), int(2.5 * SR)), 0.040, 0.600)
-
-
-def _quiet_start(x: list, start: int, period: float) -> int:
-    """把循环起点挪到一个对周期内包络最低处（tick 与 tock 之间的间隙）。
-
-    整数对周期仍可能有毫秒级误差，循环点若落在事件上就会听到"半声"；
-    落在间隙里，即使相位略有偏差，接缝也是安静的。
-    """
-    hop = 64
-    end = min(len(x), start + max(hop, int(round(period * 0.8))))
-    best_i, best_e = start, None
-    for i in range(start, end - hop + 1, hop):
-        e = sum(v * v for v in x[i:i + hop])
-        if best_e is None or e < best_e:
-            best_e, best_i = e, i
-    return best_i
 
 
 def _tick_tock_loops(src: str) -> list:
@@ -557,14 +390,6 @@ def _tick_tock_loops(src: str) -> list:
     return loops
 
 
-def _write(path: str, samples: list, peak: float = PEAK) -> None:
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        w.writeframes(_to_bytes(samples, peak))
-
-
 if __name__ == "__main__":
     import sys
 
@@ -580,27 +405,13 @@ if __name__ == "__main__":
     _write(os.path.join(sounds, "suspense.wav"), _suspense_heartbeat())
     _write(os.path.join(sounds, "slot_win.wav"), _win())
 
-    # 三轴滚动声：优先用真实 tick-tock 录音切片（听感最真）。
-    # 找不到源文件或 ffmpeg 时退回合成版本，脚本仍然可用。
     src = os.path.join(root, "tools", "ref", "tick_tock_source.mp3")
-    if os.path.exists(src):
-        try:
-            for name, loop in zip(("slot_spin_a.wav", "slot_spin_b.wav", "slot_spin_c.wav"),
-                                  _tick_tock_loops(src)):
-                _write_raw(os.path.join(sounds, name), loop, rms_dbfs=-24.0)
-            print("slot_spin_a/b/c.wav ← 真实 tick-tock 录音（tools/ref）")
-        except Exception as exc:
-            print("参照录音处理失败，退回合成版本：%s" % exc, file=sys.stderr)
-            src = ""
-    if not src:
-        for name, rate, seed_shift, detune in (
-            ("slot_spin_a.wav", 25.0, 0, 1.000),
-            ("slot_spin_b.wav", 24.6, 1, 0.960),
-            ("slot_spin_c.wav", 24.2, 2, 0.920),
-        ):
-            _write(os.path.join(sounds, name),
-                   _projector_loop(rate, seed_shift, detune), peak=0.30)
-        print("slot_spin_a/b/c.wav ← 合成版本")
+    if not os.path.exists(src):
+        print("缺少参照录音，无法生成三轴滚动声：%s" % src, file=sys.stderr)
+        sys.exit(1)
+    for name, loop in zip(("slot_spin_a.wav", "slot_spin_b.wav", "slot_spin_c.wav"),
+                          _tick_tock_loops(src)):
+        _write_raw(os.path.join(sounds, name), loop, rms_dbfs=-24.0)
 
     print("written: reel_stop.wav, reel_tick.wav, near_miss.wav, near_miss_high.wav, "
           "near_miss_low.wav, suspense.wav, slot_win.wav, slot_spin_a/b/c.wav")
