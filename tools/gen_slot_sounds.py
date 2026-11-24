@@ -1,7 +1,7 @@
 """老虎机音效离线合成：加法合成（泛音配方）+ 软限幅 + 峰值归一化。
 
 全部用 math/struct/wave 实现，不引入 numpy：离线跑一次，且不增加打包体积。
-滚动声例外：它取自一段真实放映机录音（tools/ref），只做切片与重采样——
+滚动声例外：它取自一段真实 tick-tock 录音（tools/ref），只做切片与重采样——
 合成的机械循环缺"活物感"，反复调参也换不来真实录音里的细微不规则。
 """
 import math
@@ -12,6 +12,9 @@ import wave
 
 SR = 44100
 PEAK = 0.891       # -1 dBFS：七个音统一响度，避免连续播放忽大忽小
+
+_TICK_TOCK_RATE_HZ = 12.0  # 参照录音每秒 tick 数；tick-tock 成对，故周期约 2/rate
+_SPIN_LOOP_SECONDS = 4.0   # 每轴循环长度目标：够长，噪声纹理不会几秒就重复一次
 
 # 泛音配方：(频率倍率, 相对幅度)。非整数倍率产生金属/钟的失谐共鸣，
 # 整数倍率产生明亮干净的"金币"音色。
@@ -374,20 +377,22 @@ def _decode_source(path: str) -> list:
     return [v / 32768.0 for v in raw]
 
 
-def _measure_claw_period(x: list, start: int, span: int) -> float:
-    """在指定区间内实测抓片周期（样本数，浮点）。
+def _measure_period(x: list, start: int, span: int,
+                    lo_s: float = 0.060, hi_s: float = 0.800) -> float:
+    """在指定区间内实测事件周期（样本数，浮点）。
 
-    参照录音的转速并不恒定：整段平均 40.09ms，但前 19 秒稳定在 40.63ms，
-    末段明显变慢（47.9ms）。若用全局平均值去切整数个周期，每格会带
-    0.57ms 的漂移，50 格累计错开近一整格——循环点两记抓片撞在一起，
+    参照录音的转速并不恒定：整段平均与局部会差好几毫秒。若用全局平均
+    周期去切整数个周期，几十个周期累计下来循环点两记事件就会撞在一起，
     听感就是"循环起来很奇怪"。所以每个切片点都必须就地实测周期。
 
     用包络自相关（帧长 64 样本）+ 抛物线插值，得到亚样本精度。
+    lo_s/hi_s 是搜索的周期上下限（秒）：tick-tock 的对周期约 1/6 秒，
+    所以下限放到 60ms（单个 tick 间隔），上限放到 800ms（防锁到多倍周期）。
     """
     hop = 64
     region = x[start:start + span]
     if len(region) < hop * 8:
-        return SR / 24.6
+        return SR * 2.0 / _TICK_TOCK_RATE_HZ
     env = []
     for i in range(0, len(region) - hop, hop):
         env.append(math.sqrt(sum(v * v for v in region[i:i + hop]) / hop))
@@ -400,8 +405,8 @@ def _measure_claw_period(x: list, start: int, span: int) -> float:
                         sum(env[i + lag] ** 2 for i in range(len(env) - lag)))
         return num / den if den else 0.0
 
-    lo = int(0.030 * SR / hop)
-    hi = int(0.050 * SR / hop)
+    lo = max(1, int(lo_s * SR / hop))
+    hi = max(lo + 1, int(hi_s * SR / hop))
     best = (-2.0, lo)
     for lag in range(lo, min(hi, len(env) - 2)):
         r = ac(lag)
@@ -418,10 +423,10 @@ def _measure_claw_period(x: list, start: int, span: int) -> float:
 
 def _seamless_loop(x: list, start: int, period: float, periods: int,
                    xfade: int) -> list:
-    """从录音取整数个抓片周期，把尾部交叉淡入头部做成无缝循环。
+    """从录音取整数个事件周期，把尾部交叉淡入头部做成无缝循环。
 
-    循环长度必须取抓片周期的整数倍：这样循环点两侧的抓片相位完全对齐，
-    交叉淡化时不会出现"两记抓片错位叠成一记"的重影（听感上就是一顿一顿）。
+    循环长度必须取周期的整数倍：这样循环点两侧的事件相位完全对齐，
+    交叉淡化时不会出现"两记事件错位叠成一记"的重影（听感上就是一顿一顿）。
     """
     L = int(round(period * periods))
     if start + L + xfade > len(x):
@@ -449,52 +454,106 @@ def _resample(x: list, ratio: float) -> list:
 
 
 def _write_raw(path: str, samples: list, rms_dbfs: float = -24.0,
-               ceiling: float = 0.90) -> None:
-    """按 RMS 定响度、峰值只做上限保护，不做软限幅。
+               knee: float = 0.85, ceiling: float = 0.92) -> None:
+    """按 RMS 定响度，只对越过膝点的极少数尖峰做软膝压缩。
 
-    真实录音的 crest 约 19dB（稀疏尖峰 + 很低的底噪），若按峰值归一化，
-    RMS 会掉到 -30dBFS 以下，三轴根本听不见；而软限幅会削掉抓片瞬态、
-    把"嚓"压成"嗡"。所以这里只做整体缩放 + 上限保护，波形原样保留。
+    真实录音的 crest 很高（稀疏尖峰 + 很低的底噪），三轴切到的段落 crest
+    还各不相同（实测 24–28dB）。若按峰值归一化，三轴 RMS 会差到 4dB，
+    叠播时听得出"某一轴更响"；而全程软限幅又会削掉 tick 的瞬态。
+    所以这里先按 RMS 定标（三轴持续响度一致），再只把超过 knee 的尖峰
+    用指数曲线压向 ceiling——实测受影响的样本不到 0.01%、能量损失 <0.2%，
+    瞬态形状基本保留。
     """
     rms = math.sqrt(sum(v * v for v in samples) / len(samples)) if samples else 0.0
     if rms <= 1e-12:
         return
     k = (10.0 ** (rms_dbfs / 20.0)) / rms
-    peak = max(abs(v) for v in samples) * k
-    if peak > ceiling:
-        k *= ceiling / peak
+    span = max(1e-6, ceiling - knee)
+
+    def shape(s: float) -> float:
+        a = abs(s)
+        if a <= knee:
+            return s
+        return math.copysign(min(knee + span * (1.0 - math.exp(-(a - knee) / span)), ceiling), s)
+
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(SR)
         w.writeframes(b"".join(
-            struct.pack("<h", int(round(max(-1.0, min(1.0, v * k)) * 32767)))
+            struct.pack("<h", int(round(shape(v * k) * 32767)))
             for v in samples
         ))
 
 
-def _slot_axis_loops(src: str) -> list:
-    """从真实放映机录音切出三轴循环。
+def _probe_pair_period(x: list) -> float:
+    """实测 tick-tock 的**对周期**（tick+tock 一轮，样本数）。
+
+    tick 与 tock 音色不同，所以包络自相关在单事件间隔处较弱、
+    在一整对处最强——长区间搜索锁到的就是"对周期"。
+    搜索 40–600ms 覆盖常见机械钟/转轮的速率，不依赖外部假设的 BPM。
+    """
+    return _measure_period(x, 0, min(len(x), int(2.5 * SR)), 0.040, 0.600)
+
+
+def _quiet_start(x: list, start: int, period: float) -> int:
+    """把循环起点挪到一个对周期内包络最低处（tick 与 tock 之间的间隙）。
+
+    整数对周期仍可能有毫秒级误差，循环点若落在事件上就会听到"半声"；
+    落在间隙里，即使相位略有偏差，接缝也是安静的。
+    """
+    hop = 64
+    end = min(len(x), start + max(hop, int(round(period * 0.8))))
+    best_i, best_e = start, None
+    for i in range(start, end - hop + 1, hop):
+        e = sum(v * v for v in x[i:i + hop])
+        if best_e is None or e < best_e:
+            best_e, best_i = e, i
+    return best_i
+
+
+def _tick_tock_loops(src: str) -> list:
+    """从真实 tick-tock 录音切出三轴循环。
 
     三轴各取录音里**不同位置**的片段：若三轴共用同一段再变调叠加，
     两份相同噪声在不同音高下会形成梳状干涉（缓慢的"哇哇"起伏），
-    听起来像同一个声音在颤动，而不是三台机器。换成互不相关的片段后
-    噪声去相关，只剩抓片节奏的轻微错位，才是"三台放映机"的听感。
+    听起来像同一个声音在颤动，而不是三个转轮。换成互不相关的片段后
+    只剩节奏的轻微错位，才是"三轴在转"的听感。
 
-    变调比例只取 1.000/1.010/1.020：差值再大，抓片脉冲之间会以
+    变调比例只取 1.000/1.010/1.020：差值再大，相邻事件之间会以
     0.5Hz 以上的速度相互干涉，形成明显拍频，同样会听出"怪"。
-    片段全部落在 0–19 秒的稳定转速区，避开末段变慢的部分。
+
+    tick 与 tock 音色不同、单个事件并不等价，所以循环单位必须是
+    **整数个 tick-tock 对**；周期数再取偶数，万一段落自相关锁到的是
+    单个 tick，偶数也能保住 tick-tock 的交替顺序。
     """
     x = _decode_source(src)
-    periods = 100                     # ≈4s：噪声纹理不会几秒就重复一次
-    plans = ((2.0, 1.000), (7.5, 1.010), (13.0, 1.020))
+    dur = len(x) / SR
+    pair = _probe_pair_period(x)                         # 三轴共用同一对周期基准
+    loop = min(_SPIN_LOOP_SECONDS, max(1.0, dur - 1.6))  # 录音偏短就缩短循环
+    span = max(0.0, dur - loop - 0.5)                    # 三个起点可用的余量
+    # 起点只错开 35%：录音本身不到 4s，错太开会让末轴剩不下足够的整对周期
+    # （实测第三轴被挤到只有 4 对 ≈1.7s，循环点重复得太密）。
+    plans = ((0.0, 1.000), (0.35, 1.010), (0.70, 1.020))
     loops = []
-    for start_s, ratio in plans:
-        start = int(start_s * SR)
-        period = _measure_claw_period(x, start, int(1.5 * SR))
-        xfade = int(round(period))    # 淡化一整个抓片周期，相位对齐时是透明的
+    for frac, ratio in plans:
+        start = int(span * frac * SR)
+        region = max(0, min(len(x) - start, int(2.5 * SR)))
+        period = _measure_period(
+            x, start, region, 0.7 * pair / SR, 1.4 * pair / SR)
+        if not 0.85 * pair <= period <= 1.15 * pair:
+            period = pair                                # 局部异常就退回基准
+        start = _quiet_start(x, start, period)
+        xfade = min(int(round(period)), int(0.20 * SR))
+        # 目标对数是偶数（保住 tick-tock 交替）；但还要装得下录音剩余的
+        # 整数对——装不下就退到能装下的最大偶数对，而不是硬减到只剩 2 对。
+        want = 2 * int(round(loop / (2.0 * period / SR)))
+        fit = 2 * int((len(x) - start - xfade) // period)
+        pairs = max(2, min(want, fit))
+        if pairs < 2:
+            raise RuntimeError("参照录音太短，切不出三轴循环")
         loops.append(_resample(
-            _seamless_loop(x, start, period, periods, xfade), ratio))
+            _seamless_loop(x, start, period, pairs, xfade), ratio))
     return loops
 
 
@@ -521,15 +580,15 @@ if __name__ == "__main__":
     _write(os.path.join(sounds, "suspense.wav"), _suspense_heartbeat())
     _write(os.path.join(sounds, "slot_win.wav"), _win())
 
-    # 三轴滚动声：优先用真实放映机录音切片（听感最真）。
+    # 三轴滚动声：优先用真实 tick-tock 录音切片（听感最真）。
     # 找不到源文件或 ffmpeg 时退回合成版本，脚本仍然可用。
-    src = os.path.join(root, "tools", "ref", "projector_loop_source.mp3")
+    src = os.path.join(root, "tools", "ref", "tick_tock_source.mp3")
     if os.path.exists(src):
         try:
             for name, loop in zip(("slot_spin_a.wav", "slot_spin_b.wav", "slot_spin_c.wav"),
-                                  _slot_axis_loops(src)):
+                                  _tick_tock_loops(src)):
                 _write_raw(os.path.join(sounds, name), loop, rms_dbfs=-24.0)
-            print("slot_spin_a/b/c.wav ← 真实放映机录音（tools/ref）")
+            print("slot_spin_a/b/c.wav ← 真实 tick-tock 录音（tools/ref）")
         except Exception as exc:
             print("参照录音处理失败，退回合成版本：%s" % exc, file=sys.stderr)
             src = ""
