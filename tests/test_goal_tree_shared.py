@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models import AppState, Reward, Subtask, Task, TaskStatus
 from src.paths import project_root
-from src.ui_goal_tree_shared import (
+from src.ui.goal_shared import (
     completion_bonus_gold,
     goal_detail_actions_signature,
     parse_decompose_titles,

@@ -1,7 +1,7 @@
 """悬浮窗样式。树节点样式见 ui_task_tree.TREE_QSS / GOAL_TREE_PANEL_QSS。"""
 from __future__ import annotations
 
-from .ui_task_tree import GOAL_TREE_PANEL_QSS, TREE_QSS
+from .task_tree import GOAL_TREE_PANEL_QSS, TREE_QSS
 
 WIDGET_STYLESHEET = """
 QWidget#WidgetWindow {

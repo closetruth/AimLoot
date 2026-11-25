@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.ui_odometer import integer_digit_count, place_scroll
+from src.ui.odometer import integer_digit_count, place_scroll
 
 
 class PlaceScrollTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class PlaceScrollTests(unittest.TestCase):
     def test_resting_reel_aligns_to_tenths_grid(self):
         """开箱货币是 2 位小数（如 12.37）：静止刷新必须量化到 0.1 网格，
         十分位不能停在两数字中间。"""
-        from src.ui_odometer import RollingAmount
+        from src.ui.odometer import RollingAmount
         reel = RollingAmount("#f5c842")
         reel.set_amount(12.37)
         self.assertEqual(reel.amount(), 12.4)

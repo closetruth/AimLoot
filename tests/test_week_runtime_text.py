@@ -12,7 +12,7 @@ from src.models import AppState
 from src.power_monitor import PowerMonitor
 from src.runtime_intervals import DaySlice, enrich_slices, identity_color, resolve_runtime_labels
 from src.task_manager import TaskManager
-from src.ui_week_runtime import (
+from src.ui.week_runtime import (
     clip_hours,
     format_clock_hours,
     format_legend_label,

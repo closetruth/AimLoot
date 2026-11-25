@@ -32,11 +32,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .branding import window_title
-from .models import Inventory, Reward
-from .ui_qt import center_dialog_on_parent
-from .ui_styles import DARK_BASE_QSS, TEXT_MUTED
-from .ui_text import format_amount, format_reward_gain
+from ..branding import window_title
+from ..models import Inventory, Reward
+from .qt import center_dialog_on_parent
+from .styles import DARK_BASE_QSS, TEXT_MUTED
+from ..text import format_amount, format_reward_gain
 
 SLOT_QSS = DARK_BASE_QSS + f"""
 QLabel#SlotTitle {{ font-size: 16px; font-weight: 600; }}
@@ -365,7 +365,7 @@ def draw_letter_prize(rng: Optional[random.Random] = None) -> Tuple[str, int]:
 
 def song_names() -> List[str]:
     """可开出试听券的歌曲名列表（aim/ 文件夹）。"""
-    from .sfx import bgm_song_list
+    from ..sfx import bgm_song_list
 
     return [str(s["name"]) for s in bgm_song_list()]
 
@@ -1167,12 +1167,12 @@ def _describe_prizes(prizes: SlotPrizes) -> str:
 
 
 def _main(argv: Optional[List[str]] = None) -> int:
-    """独立调试启动器：python -m src.ui_slot_machine [结果] [--gold N] [--seed N]。"""
+    """独立调试启动器：python -m src.ui.slot_machine [结果] [--gold N] [--seed N]。"""
     import argparse
     import sys
 
     parser = argparse.ArgumentParser(
-        prog="python -m src.ui_slot_machine",
+        prog="python -m src.ui.slot_machine",
         description="老虎机独立调试启动器（不加载主程序与存档）",
     )
     parser.add_argument("result", nargs="?", help="强制结果：000 / 0,0,0 / 金钻字♪；省略则随机")
@@ -1187,7 +1187,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
     result = forced if forced is not None else spin_result(rng)
 
     app = QApplication(sys.argv[:1])
-    from .sfx import SfxPlayer
+    from ..sfx import SfxPlayer
 
     sfx = SfxPlayer({})
     app.sfx = sfx

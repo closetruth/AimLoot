@@ -11,7 +11,7 @@ from typing import Callable, List, Optional, Tuple
 from .game_protocol import GameResult, GameSession
 from .models import AppState
 from .paths import project_root
-from .ui_text import format_amount
+from .text import format_amount
 
 logger = logging.getLogger(__name__)
 

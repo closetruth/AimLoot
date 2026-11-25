@@ -23,13 +23,13 @@ from .branding import window_title
 from .goal_actions import try_complete_goal, try_delete_goal
 from .models import AppState, Task, TaskStatus
 from .task_manager import TaskManager
-from .ui_confirm import ask_yes_no
-from .ui_goal_tree_panel import GoalTreePanel
-from .ui_qt import make_divider, make_section_title
-from .ui_styles import DARK_BASE_QSS
-from .ui_task_tree import GOAL_TREE_PANEL_QSS, TREE_QSS
-from .ui_text import format_duration
-from .ui_week_runtime import WeekRuntimePanel
+from .ui.confirm import ask_yes_no
+from .ui.goal_panel import GoalTreePanel
+from .ui.qt import make_divider, make_section_title
+from .ui.styles import DARK_BASE_QSS
+from .ui.task_tree import GOAL_TREE_PANEL_QSS, TREE_QSS
+from .text import format_duration
+from .ui.week_runtime import WeekRuntimePanel
 
 DIALOG_STYLESHEET = DARK_BASE_QSS + """
 QTabWidget::pane {

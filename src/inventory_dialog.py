@@ -23,9 +23,9 @@ from PySide6.QtWidgets import (
 from . import chest_opening
 from .branding import window_title
 from .models import AppState, TaskStatus
-from .ui_confirm import ask_yes_no
-from .ui_roll_bar import CHEST_RARITY_COLORS, CHEST_RARITY_NAMES
-from .ui_styles import (
+from .ui.confirm import ask_yes_no
+from .ui.roll_bar import CHEST_RARITY_COLORS, CHEST_RARITY_NAMES
+from .ui.styles import (
     ACCENT,
     ACCENT_HOVER,
     BG_CARD,
@@ -33,7 +33,7 @@ from .ui_styles import (
     FONT_FAMILY,
     TEXT_PRIMARY,
 )
-from .ui_text import format_amount, format_roll_history_line
+from .text import format_amount, format_roll_history_line
 
 
 INVENTORY_DIALOG_QSS = f"""

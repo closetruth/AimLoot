@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
-from .models import Subtask, TaskStatus
+from ..models import Subtask, TaskStatus
 
 TREE_INDENT_PX = 24
 

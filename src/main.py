@@ -58,7 +58,7 @@ from .storage import (
 )
 from .task_dialog import TaskDialog
 from .task_manager import TaskManager
-from .ui_text import format_reward_gain
+from .text import format_reward_gain
 from .widget import FloatingWidget
 
 logger = logging.getLogger(__name__)
@@ -351,7 +351,7 @@ class Application(QObject):
         logger.info("领取子目标「%s」: gold=%.1f diamond=%.1f", title, reward.gold, reward.diamond)
         self._notify_subtask_claim(reward, title=title)
 
-        from .ui_slot_machine import SlotMachineDialog, SlotPrizes
+        from .ui.slot_machine import SlotMachineDialog, SlotPrizes
 
         base = reward if reward is not None else Reward()
 
@@ -447,7 +447,7 @@ class Application(QObject):
         if self._inv_dialog is not None and self._inv_dialog.isVisible():
             self._inv_dialog.refresh()
 
-        from .ui_open_chest_dialog import OpenChestDialog
+        from .ui.open_chest import OpenChestDialog
         totals = {
             (letter, rar): state.inventory.letters.get(letter, [0] * 5)[rar]
             for letter, rar in result.letters
@@ -502,7 +502,7 @@ class Application(QObject):
             rarity, len(opens), total_letters, total_gold, total_diam, msg,
         )
         self._refresh_after_chest()
-        from .ui_chest_summary import show_chest_summary
+        from .ui.chest_summary import show_chest_summary
         show_chest_summary(
             self.widget,
             opens,
@@ -519,7 +519,7 @@ class Application(QObject):
             return
         logger.info("批量开箱 (count=%d)", len(opens))
         self._refresh_after_chest()
-        from .ui_chest_summary import show_chest_summary
+        from .ui.chest_summary import show_chest_summary
         show_chest_summary(
             self.widget,
             opens,

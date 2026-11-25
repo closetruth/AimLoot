@@ -18,9 +18,9 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from .chest_opening import OpenResult
-from .ui_qt import center_dialog_on_parent
-from .ui_roll_bar import CHEST_RARITY_COLORS, CHEST_RARITY_NAMES, _draw_chest
+from ..chest_opening import OpenResult
+from .qt import center_dialog_on_parent
+from .roll_bar import CHEST_RARITY_COLORS, CHEST_RARITY_NAMES, _draw_chest
 
 DIALOG_QSS = """
 QDialog {

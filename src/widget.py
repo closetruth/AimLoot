@@ -29,23 +29,23 @@ from .op_tracker import OpRateTracker
 from .reward_system import roll_progress
 from .storage import save_state
 from .task_manager import TaskManager
-from .ui_goal_tree_area import GoalTreeArea
-from .ui_odometer import RollingAmount
-from .ui_qt import make_section_title, set_label_html
-from .ui_roll_bar import (
+from .ui.goal_area import GoalTreeArea
+from .ui.odometer import RollingAmount
+from .ui.qt import make_section_title, set_label_html
+from .ui.roll_bar import (
     _CHEST_SIZE,
     _draw_chest,
     CHEST_RARITY_NAMES,
     EasedProgressBar,
     SegmentedRollBar,
 )
-from .ui_slot_machine import SlotMachineDialog
-from .ui_text import (
+from .ui.slot_machine import SlotMachineDialog
+from .text import (
     format_ops_summary_html,
     format_roll_history_lines_html,
 )
-from .ui_widget_qss import WIDGET_STYLESHEET
-from .ui_window_drag import DragHandleBar, SystemMoveFilter
+from .ui.qss import WIDGET_STYLESHEET
+from .ui.window_drag import DragHandleBar, SystemMoveFilter
 from .win_utils import (
     WM_ENTERSIZEMOVE,
     WM_EXITSIZEMOVE,
@@ -592,7 +592,7 @@ class FloatingWidget(QWidget):
         dialog.deleteLater()
 
     def _apply_slot_prizes(self, prizes: object) -> None:
-        from .ui_slot_machine import SlotPrizes
+        from .ui.slot_machine import SlotPrizes
 
         if isinstance(prizes, SlotPrizes):
             prizes.apply(self.state.inventory)

@@ -5,8 +5,8 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 
 from .models import Reward
 from .task_manager import TaskManager
-from .ui_confirm import ask_yes_no
-from .ui_slot_machine import SlotMachineDialog, SlotPrizes
+from .ui.confirm import ask_yes_no
+from .ui.slot_machine import SlotMachineDialog, SlotPrizes
 
 
 def _apply_slot_prizes(manager: TaskManager, prizes: SlotPrizes) -> None:

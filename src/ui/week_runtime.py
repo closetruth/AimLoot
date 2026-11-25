@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .models import AppState
-from .runtime_intervals import (
+from ..models import AppState
+from ..runtime_intervals import (
     DaySlice,
     add_weeks,
     day_seconds_for_week,
@@ -32,10 +32,10 @@ from .runtime_intervals import (
     slices_for_week,
     top_level_titles_from_slices,
 )
-from .task_manager import TaskManager
-from .ui_qt import clear_layout
-from .ui_styles import BORDER, FONT_FAMILY, TEXT_MUTED, TEXT_PRIMARY
-from .ui_text import format_duration
+from ..task_manager import TaskManager
+from .qt import clear_layout
+from .styles import BORDER, FONT_FAMILY, TEXT_MUTED, TEXT_PRIMARY
+from ..text import format_duration
 
 WEEKDAYS = "一二三四五六日"
 GUTTER = 28

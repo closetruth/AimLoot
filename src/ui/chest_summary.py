@@ -6,9 +6,9 @@ from typing import Sequence, Tuple
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from .chest_opening import OpenResult
-from .ui_styles import BG_DIALOG, FONT_FAMILY, TEXT_PRIMARY
-from .ui_text import format_amount
+from ..chest_opening import OpenResult
+from .styles import BG_DIALOG, FONT_FAMILY, TEXT_PRIMARY
+from ..text import format_amount
 
 SUMMARY_QSS = f"""
 QDialog {{

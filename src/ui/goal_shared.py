@@ -14,10 +14,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .models import AppState, Subtask, Task, TaskStatus
-from .task_manager import TaskManager
-from .ui_qt import pin_html_label_width
-from .ui_task_tree import (
+from ..models import AppState, Subtask, Task, TaskStatus
+from ..task_manager import TaskManager
+from .qt import pin_html_label_width
+from .task_tree import (
     TREE_INDENT_PX,
     SubtaskActionCallbacks,
     TreeRow,
@@ -25,7 +25,7 @@ from .ui_task_tree import (
     apply_subtask_block_ui,
     build_subtask_action_buttons,
 )
-from .ui_text import format_goal_root_line_html, format_tree_node_html
+from ..text import format_goal_root_line_html, format_tree_node_html
 
 SUBGOAL_INDENT_PX = TREE_INDENT_PX
 

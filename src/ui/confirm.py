@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QWidget
 
-from .ui_qt import center_dialog_on_parent
+from .qt import center_dialog_on_parent
 
 CONFIRM_QSS = """
 QMessageBox {

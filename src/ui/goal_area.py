@@ -27,13 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .currency_display import CurrencyDisplay
-from .goal_actions import try_complete_goal, try_delete_goal
-from .models import AppState, Subtask, Task, TaskStatus
-from .storage import save_state
-from .task_manager import TaskManager
-from .ui_confirm import ask_yes_no
-from .ui_goal_tree_shared import (
+from ..currency_display import CurrencyDisplay
+from ..goal_actions import try_complete_goal, try_delete_goal
+from ..models import AppState, Subtask, Task, TaskStatus
+from ..storage import save_state
+from ..task_manager import TaskManager
+from .confirm import ask_yes_no
+from .goal_shared import (
     completion_bonus_gold,
     goal_detail_actions_signature,
     make_empty_subtasks_hint,
@@ -45,8 +45,8 @@ from .ui_goal_tree_shared import (
     visible_subtask_structure,
     wrap_indented_subtask_row,
 )
-from .ui_odometer import RollingAmount
-from .ui_qt import (
+from .odometer import RollingAmount
+from .qt import (
     clear_layout,
     drain_layout_widgets,
     make_section_title,
@@ -54,7 +54,7 @@ from .ui_qt import (
     set_label_html,
     set_label_text,
 )
-from .ui_task_tree import (
+from .task_tree import (
     SubtaskActionCallbacks,
     TreeRow,
     append_subtask_detail_actions,
@@ -62,7 +62,7 @@ from .ui_task_tree import (
     apply_goal_block_ui,
     apply_subtask_block_ui,
 )
-from .ui_text import (
+from ..text import (
     format_goal_ops_html,
     format_goal_root_line_html,
     format_subgoals_focus_hint_html,

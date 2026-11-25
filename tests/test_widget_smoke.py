@@ -360,7 +360,7 @@ class RollBarPaintRegressionTest(unittest.TestCase):
     """回归：paintEvent 不得再排队 update，否则半透明置顶窗会卡死。"""
 
     def test_paint_does_not_requeue_update(self):
-        from src.ui_roll_bar import SegmentedRollBar
+        from src.ui.roll_bar import SegmentedRollBar
 
         bar = SegmentedRollBar()
         bar.set_cycle(2, 8, ["#6c8cff"] * 8)
@@ -416,13 +416,13 @@ class RollBarInitRegressionTest(unittest.TestCase):
 
 class FillFlashIntervalTests(unittest.TestCase):
     def test_start_does_not_flash(self):
-        from src.ui_roll_bar import fill_flash_interval_ms
+        from src.ui.roll_bar import fill_flash_interval_ms
 
         self.assertIsNone(fill_flash_interval_ms(0.0))
         self.assertIsNone(fill_flash_interval_ms(0.19))
 
     def test_closer_to_end_is_faster(self):
-        from src.ui_roll_bar import fill_flash_interval_ms
+        from src.ui.roll_bar import fill_flash_interval_ms
 
         mid = fill_flash_interval_ms(0.5)
         late = fill_flash_interval_ms(0.95)
@@ -431,7 +431,7 @@ class FillFlashIntervalTests(unittest.TestCase):
         self.assertGreater(mid, late)
 
     def test_full_is_near_180ms(self):
-        from src.ui_roll_bar import fill_flash_interval_ms
+        from src.ui.roll_bar import fill_flash_interval_ms
 
         full = fill_flash_interval_ms(1.0)
         self.assertIsNotNone(full)
@@ -441,7 +441,7 @@ class FillFlashIntervalTests(unittest.TestCase):
 
 class FillFlashColorTests(unittest.TestCase):
     def test_legend_hot_is_lighter_than_rest(self):
-        from src.ui_roll_bar import _RARITY_LEGEND, fill_flash_hex
+        from src.ui.roll_bar import _RARITY_LEGEND, fill_flash_hex
 
         rest = QColor(fill_flash_hex(_RARITY_LEGEND, flash_on=False))
         hot = QColor(fill_flash_hex(_RARITY_LEGEND, flash_on=True))
@@ -449,7 +449,7 @@ class FillFlashColorTests(unittest.TestCase):
         self.assertGreater(hot.lightness(), rest.lightness())
 
     def test_rare_hot_is_not_old_blue(self):
-        from src.ui_roll_bar import _RARITY_RARE, fill_flash_hex
+        from src.ui.roll_bar import _RARITY_RARE, fill_flash_hex
 
         hot = fill_flash_hex(_RARITY_RARE, flash_on=True)
         self.assertNotEqual(hot.lower(), "#b8d0ff")
@@ -460,7 +460,7 @@ class EaseChestClickTests(unittest.TestCase):
     """缓动条左键应能点到宝箱，不能被全局拖动滤镜吃掉。"""
 
     def test_click_reached_chest_emits_claimed(self):
-        from src.ui_roll_bar import EasedProgressBar, _ease_span_for_cycle
+        from src.ui.roll_bar import EasedProgressBar, _ease_span_for_cycle
 
         bar = EasedProgressBar()
         bar.resize(280, 18)
@@ -477,8 +477,8 @@ class EaseChestClickTests(unittest.TestCase):
         bar.deleteLater()
 
     def test_move_filter_does_not_eat_eased_bar_clicks(self):
-        from src.ui_roll_bar import EasedProgressBar
-        from src.ui_window_drag import SystemMoveFilter
+        from src.ui.roll_bar import EasedProgressBar
+        from src.ui.window_drag import SystemMoveFilter
 
         class Host:
             def __init__(self) -> None:

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models import AppState, ChestItem, EaseChestsState, Inventory, validate_state_invariants
 from src.storage import load_state, save_state, take_load_warning
-from src.ui_roll_bar import (
+from src.ui.roll_bar import (
     _cycle_checkpoints,
     _cycle_chest_rarities,
     _ease_span_for_cycle,

@@ -15,7 +15,7 @@ from src.models import AppState
 from src.power_monitor import PowerMonitor
 from src.task_dialog import TaskDialog
 from src.task_manager import TaskManager
-from src.ui_week_runtime import WEEK_PANE_BG
+from src.ui.week_runtime import WEEK_PANE_BG
 
 _app = QApplication.instance() or QApplication([])
 

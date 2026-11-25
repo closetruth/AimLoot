@@ -15,9 +15,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .models import AppState, Subtask, Task, TaskStatus
-from .task_manager import TaskManager
-from .ui_goal_tree_shared import (
+from ..models import AppState, Subtask, Task, TaskStatus
+from ..task_manager import TaskManager
+from .goal_shared import (
     completion_bonus_gold,
     goal_detail_actions_signature,
     make_empty_subtasks_hint,
@@ -28,15 +28,15 @@ from .ui_goal_tree_shared import (
     visible_subtask_structure,
     wrap_indented_subtask_row,
 )
-from .ui_qt import clear_layout, drain_layout_widgets, set_label_html, set_label_text
-from .ui_task_tree import (
+from .qt import clear_layout, drain_layout_widgets, set_label_html, set_label_text
+from .task_tree import (
     SubtaskActionCallbacks,
     TreeRow,
     append_subtask_detail_actions,
     apply_goal_block_ui,
     apply_subtask_block_ui,
 )
-from .ui_text import (
+from ..text import (
     format_amount,
     format_goal_root_line_html,
     format_subgoals_focus_hint_html,

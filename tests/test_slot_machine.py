@@ -19,7 +19,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from src.models import Reward
-from src.ui_slot_machine import (
+from src.ui.slot_machine import (
     SlotMachineDialog,
     SlotPrizes,
     _match_of,
@@ -239,7 +239,7 @@ class ReelDirectionTests(unittest.TestCase):
     """转轮方向回归：向下滚（上格符号下一帧落到中心）。"""
 
     def test_symbol_flows_downward(self):
-        from src.ui_slot_machine import _ReelWidget
+        from src.ui.slot_machine import _ReelWidget
 
         reel = _ReelWidget()
         above = reel._symbol_at(-1)
@@ -248,7 +248,7 @@ class ReelDirectionTests(unittest.TestCase):
         self.assertEqual(above, center_next, "上格符号应落到中心（向下滚）")
 
     def test_stopping_at_symbol_lands_center(self):
-        from src.ui_slot_machine import _ReelWidget
+        from src.ui.slot_machine import _ReelWidget
 
         reel = _ReelWidget()
         reel._offset = 0.0
@@ -267,7 +267,7 @@ class SlowdownTests(unittest.TestCase):
 
     def test_stop_reserves_braking_distance(self):
         """停点必须留出减速距离，否则来不及减速（观感仍是骤停）。"""
-        from src.ui_slot_machine import _REEL_STOP_MS, _ReelWidget, _stop_min_dist
+        from src.ui.slot_machine import _REEL_STOP_MS, _ReelWidget, _stop_min_dist
 
         need = _stop_min_dist(_REEL_STOP_MS[0])
         for start in range(0, 22):
@@ -283,7 +283,7 @@ class SlowdownTests(unittest.TestCase):
 
     def test_normal_stop_decelerates_before_halt(self):
         """普通停轴：末段步长显著小于匀速步长。"""
-        from src.ui_slot_machine import _NORMAL_STEP, _ReelWidget
+        from src.ui.slot_machine import _NORMAL_STEP, _ReelWidget
 
         reel = _ReelWidget()
         reel._offset = 0.0
@@ -304,7 +304,7 @@ class SlowdownTests(unittest.TestCase):
 
     def test_suspense_stop_crawls_slower_than_normal(self):
         """悬念轴（前两轴同号）比普通轴更拖。"""
-        from src.ui_slot_machine import _ReelWidget
+        from src.ui.slot_machine import _ReelWidget
 
         def frames(suspense_sym):
             reel = _ReelWidget()
@@ -323,7 +323,7 @@ class SlowdownTests(unittest.TestCase):
         self.assertGreater(frames(1), frames(None), "悬念停轴应更慢")
 
     def test_third_suspense_detection(self):
-        from src.ui_slot_machine import third_has_suspense
+        from src.ui.slot_machine import third_has_suspense
 
         self.assertEqual(third_has_suspense((0, 0, 9)), 0, "金金 冲三同")
         self.assertEqual(third_has_suspense((2, 2, 9)), 2, "字字 冲三同")
@@ -707,7 +707,7 @@ class HighlightTests(_SfxInjection):
     """中奖高亮：只亮中线格 + 渐亮强度动画 + 樱桃单格高亮。"""
 
     def test_flash_animates_strength(self):
-        from src.ui_slot_machine import _SYM_COIN, _ReelWidget
+        from src.ui.slot_machine import _SYM_COIN, _ReelWidget
 
         reel = _ReelWidget()
         reel.show()
