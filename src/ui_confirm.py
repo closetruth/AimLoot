@@ -4,6 +4,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QWidget
 
+from .ui_qt import center_dialog_on_parent
+
 CONFIRM_QSS = """
 QMessageBox {
     background-color: #1e1f28;
@@ -28,17 +30,6 @@ QPushButton:hover {
     border-color: #5a6a90;
 }
 """
-
-
-def _center_on_parent(box: QMessageBox, parent: QWidget | None) -> None:
-    if parent is None:
-        return
-    box.adjustSize()
-    anchor = parent.frameGeometry()
-    box.move(
-        anchor.center().x() - box.width() // 2,
-        anchor.center().y() - box.height() // 2,
-    )
 
 
 def ask_yes_no(
@@ -73,7 +64,7 @@ def ask_yes_no(
         yes_btn.setText("确定")
     if no_btn is not None:
         no_btn.setText("取消")
-    _center_on_parent(box, parent)
+    center_dialog_on_parent(box)
     box.raise_()
     box.activateWindow()
     return box.exec() == QMessageBox.Yes

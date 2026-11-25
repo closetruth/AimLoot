@@ -320,7 +320,6 @@ class GoalTreePanel(QWidget):
             is_current=is_current,
             current_id=current_id,
             callbacks=SubtaskActionCallbacks(
-                on_claim=lambda: self.action.emit(task.id, "subtask_claim", sub.id),
                 on_focus=lambda: self.action.emit(task.id, "subtask_focus", sub.id),
                 on_pause=lambda: self.action.emit(task.id, "subtask_pause", ""),
                 on_complete=lambda: self.action.emit(
@@ -535,7 +534,6 @@ class GoalTreePanel(QWidget):
         ):
             sid = sub.id
             callbacks = SubtaskActionCallbacks(
-                on_claim=lambda: self.action.emit(task.id, "subtask_claim", sid),
                 on_focus=lambda: self.action.emit(task.id, "subtask_focus", sid),
                 on_pause=lambda: self.action.emit(task.id, "subtask_pause", ""),
                 on_complete=lambda: self.action.emit(

@@ -69,18 +69,6 @@ class RollingAmount(QWidget):
         if abs(v - self._amount) < 1e-9:
             return
         self._amount = v
-        w, h = self._content_width(), self._digit_h
-        # #region agent log
-        resized = w != self.width() or h != self.height()
-        if resized:
-            from .task_manager import _agent_dbg
-            _agent_dbg(
-                "C",
-                "ui_odometer.py:set_amount",
-                "reel resized",
-                {"w": w, "h": h, "old_w": self.width()},
-            )
-        # #endregion
         self._apply_fixed_size()
         self.update()
 
@@ -90,18 +78,6 @@ class RollingAmount(QWidget):
         if abs(v - self._amount) < 1e-9:
             return
         self._amount = v
-        w, h = self._content_width(), self._digit_h
-        # #region agent log
-        resized = w != self.width() or h != self.height()
-        if resized:
-            from .task_manager import _agent_dbg
-            _agent_dbg(
-                "C",
-                "ui_odometer.py:set_amount_scrolling",
-                "reel resized",
-                {"w": w, "h": h, "old_w": self.width()},
-            )
-        # #endregion
         self._apply_fixed_size()
         self.update()
 

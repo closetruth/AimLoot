@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from .branding import window_title
 from .models import Inventory, Reward
+from .ui_qt import center_dialog_on_parent
 from .ui_styles import DARK_BASE_QSS, TEXT_MUTED
 from .ui_text import format_amount, format_reward_gain
 
@@ -1112,20 +1113,9 @@ class SlotMachineDialog(QDialog):
         self._finalize()
         super().closeEvent(event)
 
-    def _center_on_parent(self) -> None:
-        parent = self.parentWidget()
-        if parent is None:
-            return
-        self.adjustSize()
-        anchor = parent.frameGeometry()
-        self.move(
-            anchor.center().x() - self.width() // 2,
-            anchor.center().y() - self.height() // 2,
-        )
-
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._center_on_parent()
+        center_dialog_on_parent(self)
 
 
 _SYM_FROM_CHAR = {v: k for k, v in _SYM_CHAR.items()}

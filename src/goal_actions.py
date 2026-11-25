@@ -21,31 +21,6 @@ def try_complete_goal(parent: QWidget, manager: TaskManager, task_id: str) -> bo
     if task is None:
         return False
     if not manager.can_complete_task(task_id):
-        # #region agent log
-        from .task_manager import _agent_dbg
-        _agent_dbg(
-            "D",
-            "goal_actions.py:try_complete_goal",
-            "can_complete_task false",
-            {
-                "task_id": task_id,
-                "title": task.title,
-                "status": task.status.value,
-                "has_unclaimed": task.has_unclaimed_subtasks(),
-                "leaves": [
-                    {
-                        "id": s.id,
-                        "title": s.title,
-                        "done": s.done,
-                        "claimed": s.rewards_claimed,
-                        "can_finish": s.can_finish(),
-                        "time_met": s.time_target_met(),
-                    }
-                    for s in task.iter_leaves()
-                ],
-            },
-        )
-        # #endregion
         QMessageBox.information(
             parent,
             "提示",

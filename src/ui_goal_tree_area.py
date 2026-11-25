@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import time
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QRect, QTimer, Signal
@@ -30,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from .currency_display import CurrencyDisplay
 from .goal_actions import try_complete_goal, try_delete_goal
-from .models import AppState, Reward, Subtask, Task, TaskStatus
+from .models import AppState, Subtask, Task, TaskStatus
 from .storage import save_state
 from .task_manager import TaskManager
 from .ui_confirm import ask_yes_no
@@ -106,8 +105,6 @@ class GoalTreeArea(QWidget):
         self._local_refresh_pending = False
         self._geometry_sync_pending = False
         self._geometry_syncing = False
-        self._dbg_logged_c: set[str] = set()
-        self._dbg_stale_dot: set[str] = set()
         self._detail_currency = CurrencyDisplay(0.0, 0.0)
         self._detail_focus_key = ""
         # 折叠/展开时的滚动锚定：记录被点行的视口内纵坐标，重建后恢复
@@ -574,24 +571,8 @@ class GoalTreeArea(QWidget):
             active_path: frozenset[str] = frozenset()
             if task is not None and task.status == TaskStatus.ACTIVE:
                 active_path = task.active_focus_path_ids()
-            was_focused = bool(row.property("subcurrent"))
             in_path = sub_id in active_path
             row.set_row_focused(in_path)
-            # #region agent log
-            if was_focused and not in_path:
-                from .task_manager import _agent_dbg
-                _agent_dbg(
-                    "H",
-                    "ui_goal_tree_area.py:_apply_tree_selection_chrome",
-                    "cleared stale row focus chrome",
-                    {
-                        "task_id": task_id,
-                        "sub_id": sub_id,
-                        "was_focused": was_focused,
-                        "in_active_path": in_path,
-                    },
-                )
-            # #endregion
 
         for key, sub_block in self._subtask_blocks.items():
             task_id, sub_id = key.split(":", 1)
@@ -665,30 +646,7 @@ class GoalTreeArea(QWidget):
                 )
                 is_current = sid in active_path
                 if stats_only and not (is_selected or is_current):
-                    # #region agent log
-                    html = sub_line.text()
-                    stale_dot = (not sub.done) and ("●" in html)
-                    if stale_dot:
-                        stale_key = f"{task.id}:{sid}"
-                        if stale_key not in self._dbg_stale_dot:
-                            self._dbg_stale_dot.add(stale_key)
-                            from .task_manager import _agent_dbg
-                            _agent_dbg(
-                                "F",
-                                "ui_goal_tree_area.py:_refresh_tree_labels",
-                                "stats_only skipped row still showing filled dot",
-                                {
-                                    "task_id": task.id,
-                                    "sub_id": sid,
-                                    "title": sub.title,
-                                    "is_selected": is_selected,
-                                    "is_current": is_current,
-                                    "current_subtask_id": task.current_subtask_id,
-                                    "in_active_path": sid in active_path,
-                                },
-                            )
-                    # #endregion
-                    if not stale_dot:
+                    if sub.done or "●" not in sub_line.text():
                         continue
                 show_stats = is_selected or is_current
                 set_label_html(
@@ -816,31 +774,6 @@ class GoalTreeArea(QWidget):
                 since_diamond=since_diamond,
             )
             return
-        # #region agent log
-        if (
-            sub is not None
-            and sub.is_leaf()
-            and sub.time_target_met()
-            and not sub.can_finish()
-            and sub.id not in self._dbg_logged_c
-        ):
-            self._dbg_logged_c.add(sub.id)
-            from .task_manager import _agent_dbg
-            _agent_dbg(
-                "C",
-                "ui_goal_tree_area.py:_refresh_task_ops_ui",
-                "time met but can_finish false during stats refresh",
-                {
-                    "allow_action_rebuild": allow_action_rebuild,
-                    "sub_id": sub.id,
-                    "title": sub.title,
-                    "done": sub.done,
-                    "claimed": sub.rewards_claimed,
-                    "can_finish": sub.can_finish(),
-                    "task_status": task.status.value,
-                },
-            )
-        # #endregion
         self._refresh_goal_detail_stats_only(
             since_gold=since_gold,
             since_diamond=since_diamond,
@@ -966,7 +899,7 @@ class GoalTreeArea(QWidget):
                 btn.setObjectName("GoalPauseBtn")
                 btn.setCursor(Qt.PointingHandCursor)
                 btn.clicked.connect(
-                    lambda _c=False, tid=task.id: self._on_goal_pause(tid)
+                    lambda _c=False, tid=task.id: self._on_pause(tid)
                 )
                 self.goal_detail_btn_lay.addWidget(btn)
                 if task.subtasks and task.current_subtask() is None:
@@ -1013,9 +946,8 @@ class GoalTreeArea(QWidget):
         ):
             sid = sub.id
             callbacks = SubtaskActionCallbacks(
-                on_claim=lambda tid=task.id, s=sid: self._on_sub_claim(tid, s),
                 on_focus=lambda tid=task.id, s=sid: self._on_sub_focus(tid, s),
-                on_pause=lambda tid=task.id: self._on_sub_pause(tid),
+                on_pause=lambda tid=task.id: self._on_pause(tid),
                 on_complete=lambda tid=task.id, s=sid: self._on_sub_complete(tid, s),
                 on_decompose=lambda tid=task.id, s=sid: self._on_decompose(tid, s),
                 on_delete=lambda tid=task.id, s=sid: self._on_sub_delete(tid, s),
@@ -1110,9 +1042,8 @@ class GoalTreeArea(QWidget):
             is_current=is_current,
             current_id=task.current_subtask_id,
             callbacks=SubtaskActionCallbacks(
-                on_claim=lambda: self._on_sub_claim(task.id, sub.id),
                 on_focus=lambda: self._on_sub_focus(task.id, sub.id),
-                on_pause=lambda: self._on_sub_pause(task.id),
+                on_pause=lambda: self._on_pause(task.id),
                 on_complete=lambda: self._on_sub_complete(task.id, sub.id),
                 on_decompose=lambda: self._on_decompose(task.id, sub.id),
                 on_delete=lambda: self._on_sub_delete(task.id, sub.id),
@@ -1148,9 +1079,6 @@ class GoalTreeArea(QWidget):
     ) -> None:
         sig = self._task_tree_structure_signature()
         rebuilt = sig != self._subgoal_structure_sig
-        # #region agent log
-        t0 = time.perf_counter()
-        # #endregion
         if rebuilt:
             self._rebuild_task_tree(
                 since_gold=since_gold,
@@ -1161,24 +1089,6 @@ class GoalTreeArea(QWidget):
                 since_gold=since_gold,
                 since_diamond=since_diamond,
             )
-        # #region agent log
-        ms = (time.perf_counter() - t0) * 1000
-        if rebuilt or ms >= 8.0:
-            active = self.state.active_task()
-            from .task_manager import _agent_dbg
-            _agent_dbg(
-                "G",
-                "ui_goal_tree_area.py:_refresh_task_tree_section",
-                "tree refresh path",
-                {
-                    "rebuilt": rebuilt,
-                    "ms": round(ms, 2),
-                    "active_id": None if active is None else active.id,
-                    "current_subtask_id": None if active is None else active.current_subtask_id,
-                    "selected_subtask_id": self._selected_subtask_id,
-                },
-            )
-        # #endregion
 
     def _update_task_tree_lines(
         self,
@@ -1379,7 +1289,7 @@ class GoalTreeArea(QWidget):
             since_diamond=since.diamond,
         )
 
-    def _on_goal_pause(self, task_id: str) -> None:
+    def _on_pause(self, task_id: str) -> None:
         task = self.manager.get(task_id)
         if task is None or task.status != TaskStatus.ACTIVE:
             return
@@ -1416,53 +1326,12 @@ class GoalTreeArea(QWidget):
             self._request_local_refresh()
 
     def _on_sub_focus(self, task_id: str, subtask_id: str) -> None:
-        task = self.manager.get(task_id)
-        prev_id = None if task is None else task.current_subtask_id
         ok = self.manager.start_subtask(task_id, subtask_id)
-        # #region agent log
-        from .task_manager import _agent_dbg
-        after = self.manager.get(task_id)
-        _agent_dbg(
-            "I",
-            "ui_goal_tree_area.py:_on_sub_focus",
-            "switch running subtask",
-            {
-                "ok": ok,
-                "task_id": task_id,
-                "from_id": prev_id,
-                "to_id": subtask_id,
-                "after_id": None if after is None else after.current_subtask_id,
-                "selected_subtask_id": self._selected_subtask_id,
-            },
-        )
-        # #endregion
         if ok:
             self._reveal_subtask_path(task_id, subtask_id)
             self._request_state_sync()
 
-    def _on_sub_pause(self, task_id: str) -> None:
-        task = self.manager.get(task_id)
-        if task is None or task.status != TaskStatus.ACTIVE:
-            return
-        self.manager.pause(task_id)
-        self._request_state_sync()
-
     def _on_sub_complete(self, task_id: str, subtask_id: str) -> None:
-        task = self.manager.get(task_id)
-        if task is None or task.status == TaskStatus.COMPLETED:
-            return
-        sub = task.find_subtask(subtask_id)
-        if sub is None:
-            return
-        was_done = sub.done
-        reward = self.manager.complete_and_claim_subtask(task_id, subtask_id)
-        if not was_done and sub.done:
-            self.goal_completed.emit()
-        if reward is not None:
-            self.subtask_claimed.emit(sub.title, reward)
-        self._request_state_sync()
-
-    def _on_sub_claim(self, task_id: str, subtask_id: str) -> None:
         task = self.manager.get(task_id)
         if task is None or task.status == TaskStatus.COMPLETED:
             return

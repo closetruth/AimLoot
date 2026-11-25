@@ -6,7 +6,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
 
 from .models import Subtask, TaskStatus
 
@@ -248,7 +248,6 @@ def apply_goal_root_row_state(row: QWidget, *, is_running: bool) -> None:
 class SubtaskActionCallbacks:
     """子目标行尾操作回调。"""
 
-    on_claim: Optional[Callable[[], None]] = None
     on_focus: Optional[Callable[[], None]] = None
     on_pause: Optional[Callable[[], None]] = None
     on_complete: Optional[Callable[[], None]] = None
@@ -401,28 +400,6 @@ def append_subtask_detail_actions(
     show_complete = (
         can_start and sub.can_finish() and callbacks.on_complete is not None
     )
-    # #region agent log
-    try:
-        from .task_manager import _agent_dbg
-        _agent_dbg(
-            "B",
-            "ui_task_tree.py:append_subtask_detail_actions",
-            "complete button decision",
-            {
-                "sub_id": sub.id,
-                "title": sub.title,
-                "task_status": task_status.value,
-                "is_active": is_active,
-                "done": sub.done,
-                "claimed": sub.rewards_claimed,
-                "time_met": sub.time_target_met(),
-                "can_finish": sub.can_finish(),
-                "show_complete": show_complete,
-            },
-        )
-    except Exception:
-        pass
-    # #endregion
     if show_complete:
         btn = _make_detail_action_btn(
             "完成",

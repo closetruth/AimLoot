@@ -5,9 +5,9 @@ import time
 from typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
-    from .models import Reward, RollHistoryEntry, Subtask, Task
-else:
-    from .models import Reward, Subtask, Task, TaskStatus
+    from .models import RollHistoryEntry, Subtask, Task
+
+from .models import TaskStatus
 
 
 def format_duration(seconds: float) -> str:

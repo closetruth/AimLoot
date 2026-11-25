@@ -445,36 +445,12 @@ class FloatingWidget(QWidget):
 
     def kick_currency_display(self) -> None:
         """背包已变时立刻开追（不要等鼠标松开后的 UI flush）。"""
-        # #region agent log
-        t0 = time.perf_counter()
-        # #endregion
         self._sync_currency_lanes()
         self.goal_tree.kick_detail_currency()
         if not hasattr(self, "global_summary"):
             return
         self._paint_ops_and_reels(self._op_tracker.count_recent())
         self._ensure_currency_timer()
-        # #region agent log
-        self._dbg_kick_n = getattr(self, "_dbg_kick_n", 0) + 1
-        ms = (time.perf_counter() - t0) * 1000
-        if self._dbg_kick_n <= 3 or self._dbg_kick_n % 25 == 0 or ms >= 4.0:
-            from .task_manager import _agent_dbg
-            g, d = self._currency_targets()
-            _agent_dbg(
-                "A",
-                "widget.py:kick_currency_display",
-                "kick cost",
-                {
-                    "n": self._dbg_kick_n,
-                    "ms": round(ms, 2),
-                    "timer": self._currency_timer.isActive(),
-                    "need": not self._currency.caught_up(g, d)
-                    or self.goal_tree.detail_needs_tick(),
-                    "vis_g": round(g, 3),
-                    "disp_g": round(self._currency.gold, 3),
-                },
-            )
-        # #endregion
 
     def _currency_targets(self) -> tuple[float, float]:
         return self.state.visible_gold_diamond()
@@ -505,43 +481,17 @@ class FloatingWidget(QWidget):
         if self.is_user_moving():
             self._currency_last_ts = now
             return
-        # #region agent log
-        t0 = time.perf_counter()
-        t_vis = time.perf_counter()
-        # #endregion
         dt = 0.05
         if self._currency_last_ts is not None:
             dt = min(max(now - self._currency_last_ts, 0.0), 0.1)
         self._currency_last_ts = now
         gold, diamond = self._currency_targets()
-        # #region agent log
-        vis_ms = (time.perf_counter() - t_vis) * 1000
-        # #endregion
         still_global = self._currency.step(gold, diamond, dt)
         still_detail = self.goal_tree.tick_detail_currency(dt)
         self._paint_currency_reels_scrolling()
         if not still_global and not still_detail:
             self._currency_timer.stop()
             self._currency_last_ts = None
-        # #region agent log
-        self._dbg_tick_n = getattr(self, "_dbg_tick_n", 0) + 1
-        ms = (time.perf_counter() - t0) * 1000
-        if self._dbg_tick_n <= 3 or self._dbg_tick_n % 20 == 0 or ms >= 4.0:
-            from .task_manager import _agent_dbg
-            _agent_dbg(
-                "B",
-                "widget.py:_tick_currency_display",
-                "tick cost",
-                {
-                    "n": self._dbg_tick_n,
-                    "ms": round(ms, 2),
-                    "vis_ms": round(vis_ms, 2),
-                    "dt": round(dt, 3),
-                    "still_g": still_global,
-                    "still_d": still_detail,
-                },
-            )
-        # #endregion
 
     def _paint_global_stats(self) -> None:
         self._sync_currency_lanes()

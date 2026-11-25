@@ -357,21 +357,6 @@ class TaskDialog(QDialog):
                 self.subtask_claimed.emit(sub.title, reward)
             self._emit_state_changed()
             return
-        elif action == "subtask_claim":
-            task = self.manager.get(task_id)
-            if task is None:
-                return
-            sub = task.find_subtask(extra)
-            if sub is None:
-                return
-            was_done = sub.done
-            reward = self.manager.complete_and_claim_subtask(task_id, extra)
-            if not was_done and sub.done:
-                self.goal_completed.emit()
-            if reward is not None:
-                self.subtask_claimed.emit(sub.title, reward)
-            self._emit_state_changed()
-            return
         elif action == "subtask_delete":
             task = self.manager.get(task_id)
             if task is None:

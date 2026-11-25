@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .chest_opening import OpenResult
+from .ui_qt import center_dialog_on_parent
 from .ui_roll_bar import CHEST_RARITY_COLORS, CHEST_RARITY_NAMES, _draw_chest
 
 DIALOG_QSS = """
@@ -298,20 +299,9 @@ class OpenChestDialog(QDialog):
             parts.append(f"+{result.diamond:g} 钻石")
         return "  ".join(parts) if parts else "本箱未掉落货币"
 
-    def _center_on_parent(self) -> None:
-        parent = self.parentWidget()
-        if parent is None:
-            return
-        self.adjustSize()
-        anchor = parent.frameGeometry()
-        self.move(
-            anchor.center().x() - self.width() // 2,
-            anchor.center().y() - self.height() // 2,
-        )
-
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._center_on_parent()
+        center_dialog_on_parent(self)
 
     def closeEvent(self, event) -> None:
         for t in self._timers:

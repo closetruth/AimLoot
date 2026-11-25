@@ -15,39 +15,6 @@ from .runtime_intervals import RuntimeIntervalLog, intervals_path, load_log, sav
 logger = logging.getLogger(__name__)
 
 
-def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    # #region agent log
-    try:
-        import json
-        import os
-        payload = {
-            "sessionId": "4283d4",
-            "runId": "lag-v2",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        line = json.dumps(payload, ensure_ascii=False) + "\n"
-        paths = [
-            r"C:\Users\Adventure\Desktop\AimLoot\debug-4283d4.log",
-            r"C:\Users\Adventure\Desktop\AimLoot\.cursor\debug-4283d4.log",
-        ]
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            paths.append(os.path.join(appdata, "AimLoot", "debug-4283d4.log"))
-        for path in paths:
-            try:
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write(line)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # #endregion
-
-
 def _newest_first(nodes: List[Subtask]) -> List[Subtask]:
     return sorted(nodes, key=lambda s: float(s.created_at or 0), reverse=True)
 
@@ -220,27 +187,6 @@ class TaskManager:
             if only_claimable and not sub.is_claimable():
                 continue
             will_set_claimed = sub.is_leaf() and sub.done
-            # #region agent log
-            _agent_dbg(
-                "A",
-                "task_manager.py:_settle_subtask_rewards",
-                "settling leaf/node pending",
-                {
-                    "task_id": task.id,
-                    "sub_id": sub.id,
-                    "title": sub.title,
-                    "is_leaf": sub.is_leaf(),
-                    "done": sub.done,
-                    "claimed_before": sub.rewards_claimed,
-                    "only_claimable": only_claimable,
-                    "is_claimable": sub.is_claimable(),
-                    "can_claim_pending": sub.can_claim_pending(),
-                    "pending_n": len(sub.pending_rewards),
-                    "will_set_claimed": will_set_claimed,
-                    "runId": "post-fix",
-                },
-            )
-            # #endregion
             total = sub.pending_summary()
             if sub.done and sub.is_leaf():
                 total.gold += bonus
@@ -279,15 +225,6 @@ class TaskManager:
                     t.title,
                 )
         self.last_repaired_claimed_count = len(repaired)
-        # #region agent log
-        if repaired:
-            _agent_dbg(
-                "A",
-                "task_manager.py:_repair_premature_claimed_leaves",
-                "repaired premature claimed leaves",
-                {"runId": "post-fix", "repaired": repaired},
-            )
-        # #endregion
         return changed
 
     def _flush_claimed_leftover_pending(self) -> bool:
@@ -311,34 +248,6 @@ class TaskManager:
 
     def recover_stuck_subtask_rewards(self) -> bool:
         """启动时修复：误标已领取、残留 pending，以及已完成未领取的子目标。"""
-        # #region agent log
-        stuck = []
-        for t in self.state.tasks:
-            if t.status == TaskStatus.COMPLETED:
-                continue
-            for sub in t.iter_leaves():
-                stuck.append(
-                    {
-                        "task": t.title,
-                        "status": t.status.value,
-                        "sub": sub.title,
-                        "sub_id": sub.id,
-                        "done": sub.done,
-                        "claimed": sub.rewards_claimed,
-                        "time_met": sub.time_target_met(),
-                        "can_finish": sub.can_finish(),
-                        "pending_n": len(sub.pending_rewards),
-                        "active": round(sub.active_seconds, 1),
-                        "target": sub.target_seconds,
-                    }
-                )
-        _agent_dbg(
-            "A",
-            "task_manager.py:recover_stuck_subtask_rewards",
-            "startup leaf snapshot",
-            {"runId": "post-fix", "leaves": stuck},
-        )
-        # #endregion
         changed = self._repair_premature_claimed_leaves()
         if self._flush_claimed_leftover_pending():
             changed = True
@@ -418,29 +327,6 @@ class TaskManager:
         if not t or t.status == TaskStatus.COMPLETED:
             return None
         if t.has_unclaimed_subtasks():
-            # #region agent log
-            _agent_dbg(
-                "D",
-                "task_manager.py:complete",
-                "parent complete blocked",
-                {
-                    "task_id": task_id,
-                    "title": t.title,
-                    "leaves": [
-                        {
-                            "id": s.id,
-                            "title": s.title,
-                            "done": s.done,
-                            "claimed": s.rewards_claimed,
-                            "can_finish": s.can_finish(),
-                            "time_met": s.time_target_met(),
-                            "pending_n": len(s.pending_rewards),
-                        }
-                        for s in t.iter_leaves()
-                    ],
-                },
-            )
-            # #endregion
             return None
         self._settle_subtask_rewards(t)
         total = t.pending_summary()
@@ -645,57 +531,11 @@ class TaskManager:
             return None
         sub = self._get_subtask(t, subtask_id)
         if not sub or not sub.is_leaf():
-            # #region agent log
-            _agent_dbg(
-                "E",
-                "task_manager.py:complete_and_claim_subtask",
-                "reject not leaf",
-                {
-                    "task_id": task_id,
-                    "subtask_id": subtask_id,
-                    "found": sub is not None,
-                    "is_leaf": bool(sub and sub.is_leaf()),
-                },
-            )
-            # #endregion
             return None
-        # #region agent log
-        _agent_dbg(
-            "A",
-            "task_manager.py:complete_and_claim_subtask",
-            "attempt",
-            {
-                "task_id": task_id,
-                "sub_id": sub.id,
-                "title": sub.title,
-                "done": sub.done,
-                "claimed": sub.rewards_claimed,
-                "time_met": sub.time_target_met(),
-                "can_finish": sub.can_finish(),
-                "can_complete_sub": t.can_complete_sub(sub),
-                "is_claimable": sub.is_claimable(),
-                "pending_n": len(sub.pending_rewards),
-                "task_status": t.status.value,
-            },
-        )
-        # #endregion
         if not sub.done and t.can_complete_sub(sub):
             self._mark_subtask_done(t, sub)
         if sub.is_claimable():
             return self.claim_subtask_reward(task_id, subtask_id)
-        # #region agent log
-        _agent_dbg(
-            "E",
-            "task_manager.py:complete_and_claim_subtask",
-            "no claim after mark",
-            {
-                "sub_id": sub.id,
-                "done": sub.done,
-                "claimed": sub.rewards_claimed,
-                "is_claimable": sub.is_claimable(),
-            },
-        )
-        # #endregion
         return None
 
     def delete_subtask(self, task_id: str, subtask_id: str) -> bool:

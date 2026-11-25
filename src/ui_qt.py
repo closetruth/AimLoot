@@ -2,7 +2,20 @@
 from __future__ import annotations
 
 from PySide6.QtGui import QTextDocument
-from PySide6.QtWidgets import QFrame, QLabel, QWidget
+from PySide6.QtWidgets import QDialog, QFrame, QLabel, QWidget
+
+
+def center_dialog_on_parent(dialog: QDialog) -> None:
+    """把弹窗居中到父窗口（无父窗口时不动）。"""
+    parent = dialog.parentWidget()
+    if parent is None:
+        return
+    dialog.adjustSize()
+    anchor = parent.frameGeometry()
+    dialog.move(
+        anchor.center().x() - dialog.width() // 2,
+        anchor.center().y() - dialog.height() // 2,
+    )
 
 
 def make_section_title(text: str) -> QLabel:

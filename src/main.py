@@ -94,11 +94,7 @@ class Application(QObject):
         self.manager.load_runtime_log(data_mtime=mtime)
         if self.manager.recover_stuck_subtask_rewards():
             n = self.manager.last_repaired_claimed_count
-            logger.info(
-                "debug-4283d4 启动修复完成 repaired_claimed=%d",
-                n,
-            )
-            logger.info("启动时恢复了卡住的子任务奖励")
+            logger.info("启动时恢复了卡住的子任务奖励 repaired_claimed=%d", n)
             self._safe_save()
             if n:
                 QMessageBox.information(
@@ -188,10 +184,6 @@ class Application(QObject):
             get_data_dir(), self.state.total_operations, inv.gold, inv.diamond,
             len(self.state.tasks),
         )
-        # #region agent log
-        from .task_manager import _agent_dbg
-        _agent_dbg("A", "main.py:startup", "lag-v2 process loaded", {"ops": self.state.total_operations})
-        # #endregion
 
     # ---------- 系统托盘 ----------
     def _build_tray(self) -> QSystemTrayIcon:
@@ -335,16 +327,6 @@ class Application(QObject):
         ):
             self.sfx.play_roll_hit(subtask_reward)
         self.widget.note_operation()
-        # #region agent log
-        if subtask_reward is not None and not subtask_reward.is_empty():
-            from .task_manager import _agent_dbg
-            _agent_dbg(
-                "D",
-                "main.py:_on_operation",
-                "roll then kick",
-                {"ops": self.state.total_operations, "g": subtask_reward.gold, "d": subtask_reward.diamond},
-            )
-        # #endregion
         # 金钻只在记入目标时变；暂停中的开奖不要 kick
         if subtask_reward is not None and not subtask_reward.is_empty():
             self.widget.kick_currency_display()
